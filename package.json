@@ -1,0 +1,12 @@
+{
+    "name": "kirby-video-thumbnail",
+    "version": "1.0.0",
+    "scripts": {
+        "dev": "kirbyup src/index.js --watch",
+        "serve": "kirbyup serve src/index.js",
+        "build": "kirbyup src/index.js"
+    },
+    "devDependencies": {
+        "kirbyup": "^3.4.1"
+    }
+}

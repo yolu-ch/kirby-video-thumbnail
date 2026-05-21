@@ -2,7 +2,7 @@
     "name": "yolu/kirby-video-thumbnail",
     "description": "Kirby Panel plugin that auto-generates a thumbnail from a video frame on upload, with a scrubber to pick the exact frame.",
     "type": "kirby-plugin",
-    "version": "1.0.0",
+    "version": "0.0.1",
     "license": "MIT",
     "authors": [
         {

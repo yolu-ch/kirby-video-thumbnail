@@ -2,9 +2,7 @@
 
 A Kirby Panel plugin that automatically generates a JPEG thumbnail from a video frame when uploading a video file. A scrubber lets editors pick the exact frame before the upload is confirmed.
 
-[![Preview](video-thumbnail.png)](video-thumbnail.webm)
-
-[Watch demo video](video-thumbnail.webm)
+[![Preview](video-thumbnail.gif)]
 
 ## Features
 

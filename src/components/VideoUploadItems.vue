@@ -2,8 +2,8 @@
     <ul class="k-upload-items">
         <template v-for="item in visibleItems">
             <k-upload-item
-                :key="item.id"
                 v-bind="item"
+                :id="item.id"
                 class="k-upload-item-video"
                 @rename="$emit('rename', item, $event)"
                 @remove="$emit('remove', item)"
@@ -13,6 +13,8 @@
                 :key="item.id + '-slider'"
                 class="vt-slider-row"
                 @pointerup="onScrubEnd(item.url)"
+                @pointermove="onSliderDrag(item.url, $event)"
+                @input="onScrub(item.url, parseFloat($event.target.value))"
             >
                 <k-range-field
                     :min="0"
@@ -20,7 +22,7 @@
                     :step="0.01"
                     :value="seekTimes[item.url] ?? 0"
                     :help="$t('video-thumbnail.slider.help')"
-                    @input="onScrub(item.url, $event)"
+                    :tooltip="{ before: formatTime(seekTimes[item.url] ?? 0) }"
                 />
             </li>
         </template>
@@ -69,17 +71,23 @@ export default {
 
     methods: {
         onDurationReady({ detail: { videoUrl, duration } }) {
-            this.durations[videoUrl] = duration;
+            this.$set(this.durations, videoUrl, duration);
             if (this.seekTimes[videoUrl] == null) {
-                this.seekTimes[videoUrl] = Math.min(0.00, duration);
+                this.$set(this.seekTimes, videoUrl, 0);
             }
         },
 
         onScrub(videoUrl, time) {
-            this.seekTimes[videoUrl] = time;
+            this.$set(this.seekTimes, videoUrl, time);
             window.dispatchEvent(new CustomEvent('vt:seek-preview', {
                 detail: { videoUrl, time }
             }));
+        },
+
+        onSliderDrag(videoUrl, event) {
+            if (event.buttons === 0) return;
+            const input = event.currentTarget.querySelector('input[type=range]');
+            if (input) this.onScrub(videoUrl, parseFloat(input.value));
         },
 
         onScrubEnd(videoUrl) {
@@ -105,8 +113,8 @@ export default {
                 const thumbId = this.thumbMap.get(item.url);
                 if (thumbId) this.$panel.upload.remove(thumbId);
                 this.thumbMap.delete(item.url);
-                delete this.durations[item.url];
-                delete this.seekTimes[item.url];
+                this.$delete(this.durations, item.url);
+                this.$delete(this.seekTimes, item.url);
             });
         },
 
@@ -190,6 +198,13 @@ export default {
             this.updateThumb(videoUrl, blob);
         },
 
+        formatTime(seconds) {
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = Math.floor(seconds % 60);
+            return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        },
+
         formatSize(bytes) {
             if (bytes < 1024) return bytes + ' B';
             if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
@@ -221,5 +236,9 @@ export default {
 
 .vt-slider-row .k-range-input {
     width: 100%;
+}
+
+.vt-slider-row .k-range-input-tooltip-text {
+    display: none;
 }
 </style>

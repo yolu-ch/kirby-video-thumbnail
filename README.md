@@ -8,6 +8,8 @@ A Kirby Panel plugin that automatically generates a JPEG thumbnail from a video 
 
 [video-thumbnail.webm](https://github.com/user-attachments/assets/4242cc0c-6c40-417d-8f05-3596fa4f38d7)
 
+## Features
+
 - Captures a frame from the video client-side (no server-side processing)
 - Live preview of the selected frame in the upload item
 - Slider to scrub through the video and choose any frame as the thumbnail

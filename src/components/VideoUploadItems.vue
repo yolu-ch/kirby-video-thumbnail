@@ -55,6 +55,20 @@ export default {
         this.processAdditions(this.items, []);
         window.addEventListener('vt:duration-ready', this.onDurationReady);
         window.addEventListener('video-thumbnail-update', this.handleThumbnailUpdate);
+
+        // The generated thumb rides along in the field's upload queue so the
+        // slider preview works, but FilesField.on.done() selects every completed
+        // upload unconditionally. Strip the thumb from that selection so only the
+        // uploaded media lands in the field; the thumb still uploads as a sibling
+        // file, to be found by naming convention (e.g. File::poster()).
+        const upload = this.$panel.upload;
+        const done = upload.on?.done;
+        if (done && !done.vtWrapped) {
+            const wrapped = (files) =>
+                done(files.filter(f => !f.filename?.endsWith('_thumb.jpg')));
+            wrapped.vtWrapped = true;
+            upload.on.done = wrapped;
+        }
     },
 
     unmounted() {

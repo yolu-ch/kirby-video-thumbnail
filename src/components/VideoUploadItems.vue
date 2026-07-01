@@ -30,6 +30,13 @@
 </template>
 
 <script>
+const defaultThumbnailOptions = {
+    template: 'thumb',
+    prefix: '',
+    suffix: '_thumb',
+    extension: 'jpg'
+};
+
 export default {
     props: {
         items: Array
@@ -40,6 +47,8 @@ export default {
     data() {
         return {
             thumbMap: new Map(),
+            thumbnailOptions: null,
+            thumbnailOptionsPromise: null,
             durations: {},
             seekTimes: {}
         };
@@ -47,7 +56,7 @@ export default {
 
     computed: {
         visibleItems() {
-            return this.items?.filter(item => !item.filename?.endsWith('_thumb.jpg')) ?? [];
+            return this.items?.filter(item => !this.isThumbnailItem(item)) ?? [];
         }
     },
 
@@ -65,7 +74,7 @@ export default {
         const done = upload.on?.done;
         if (done && !done.vtWrapped) {
             const wrapped = (files) =>
-                done(files.filter(f => !f.filename?.endsWith('_thumb.jpg')));
+                done(files.filter(file => !this.isThumbnailItem(file)));
             wrapped.vtWrapped = true;
             upload.on.done = wrapped;
         }
@@ -104,11 +113,14 @@ export default {
             if (input) this.onScrub(videoUrl, parseFloat(input.value));
         },
 
-        onScrubEnd(videoUrl) {
+        async onScrubEnd(videoUrl) {
             const time = this.seekTimes[videoUrl] ?? 0.5;
-            this.captureBlob(videoUrl, time).then(blob => {
-                if (blob) this.updateThumb(videoUrl, blob);
-            });
+            const options = await this.getThumbnailOptions();
+            const extension = this.thumbnailExtension(options);
+            const mimeType = this.thumbnailMimeType(extension);
+            const blob = await this.captureBlob(videoUrl, time, mimeType);
+
+            if (blob) this.updateThumb(videoUrl, blob);
         },
 
         processAdditions(newItems, oldItems) {
@@ -133,18 +145,21 @@ export default {
         },
 
         async addThumbnail(videoItem) {
-            const blob = await this.captureBlob(videoItem.url, 0.5);
+            const options = await this.getThumbnailOptions();
+            const extension = this.thumbnailExtension(options);
+            const mimeType = this.thumbnailMimeType(extension);
+            const blob = await this.captureBlob(videoItem.url, 0.5, mimeType);
             if (!blob) return;
 
-            const name     = videoItem.name + '_thumb';
-            const filename = name + '.jpg';
-            const file     = new File([blob], filename, { type: 'image/jpeg' });
+            const name     = this.thumbnailName(videoItem, options);
+            const filename = this.thumbnailFilename(name, extension);
+            const file     = new File([blob], filename, { type: mimeType });
             const id       = Date.now().toString(36) + Math.random().toString(36).slice(2);
 
             const thumbItem = {
                 completed: false,
                 error:     null,
-                extension: 'jpg',
+                extension,
                 filename,
                 id,
                 model:     null,
@@ -153,15 +168,16 @@ export default {
                 progress:  0,
                 size:      file.size,
                 src:       file,
-                type:      'image/jpeg',
+                type:      mimeType,
                 url:       URL.createObjectURL(file)
             };
+            thumbItem.videoThumbnail = true;
 
             this.thumbMap.set(videoItem.url, id);
             this.$panel.upload.files = [...this.$panel.upload.files, thumbItem];
         },
 
-        captureBlob(url, time) {
+        captureBlob(url, time, mimeType = 'image/jpeg') {
             return new Promise(resolve => {
                 const video = document.createElement('video');
                 video.muted = true;
@@ -177,7 +193,7 @@ export default {
                     canvas.height = video.videoHeight || 180;
                     canvas.getContext('2d').drawImage(video, 0, 0);
                     video.src = '';
-                    canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.85);
+                    canvas.toBlob(blob => resolve(blob), mimeType, 0.85);
                 };
 
                 const capture = () => {
@@ -209,7 +225,7 @@ export default {
             if (idx === -1) return;
 
             const old = files[idx];
-            const file = new File([blob], old.filename, { type: 'image/jpeg' });
+            const file = new File([blob], old.filename, { type: old.type || 'image/jpeg' });
             if (old.url?.startsWith('blob:')) URL.revokeObjectURL(old.url);
             const url = URL.createObjectURL(file);
 
@@ -220,6 +236,70 @@ export default {
 
         handleThumbnailUpdate({ detail: { videoUrl, blob } }) {
             this.updateThumb(videoUrl, blob);
+        },
+
+        async getThumbnailOptions() {
+            if (this.thumbnailOptions) {
+                return this.thumbnailOptions;
+            }
+
+            if (!this.$api?.get) {
+                this.thumbnailOptions = { ...defaultThumbnailOptions };
+
+                return this.thumbnailOptions;
+            }
+
+            if (!this.thumbnailOptionsPromise) {
+                this.thumbnailOptionsPromise = this.$api.get('video-thumbnail/options')
+                    .then(options => {
+                        this.thumbnailOptions = {
+                            ...defaultThumbnailOptions,
+                            ...options
+                        };
+
+                        return this.thumbnailOptions;
+                    })
+                    .catch(() => {
+                        this.thumbnailOptions = { ...defaultThumbnailOptions };
+
+                        return this.thumbnailOptions;
+                    });
+            }
+
+            return this.thumbnailOptionsPromise;
+        },
+
+        isThumbnailItem(item) {
+            if (!item) return false;
+            if (item.videoThumbnail === true) return true;
+            if (item.id && [...this.thumbMap.values()].includes(item.id)) return true;
+
+            return item.filename?.endsWith('_thumb.jpg') === true;
+        },
+
+        thumbnailName(videoItem, options) {
+            return `${options.prefix ?? ''}${videoItem.name}${options.suffix ?? ''}`;
+        },
+
+        thumbnailFilename(name, extension) {
+            return `${name}.${extension}`;
+        },
+
+        thumbnailExtension(options) {
+            const extension = String(options.extension ?? defaultThumbnailOptions.extension)
+                .replace(/^\.+/, '')
+                .toLowerCase();
+
+            return ['jpg', 'jpeg', 'png', 'webp'].includes(extension) ? extension : 'jpg';
+        },
+
+        thumbnailMimeType(extension) {
+            return {
+                jpg: 'image/jpeg',
+                jpeg: 'image/jpeg',
+                png: 'image/png',
+                webp: 'image/webp'
+            }[extension] ?? 'image/jpeg';
         },
 
         formatTime(seconds) {

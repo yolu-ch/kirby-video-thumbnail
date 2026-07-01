@@ -12,9 +12,6 @@
                 v-if="item.type?.startsWith('video/') && durations[item.url]"
                 :key="item.id + '-slider'"
                 class="vt-slider-row"
-                @pointerup="onScrubEnd(item.url)"
-                @pointermove="onSliderDrag(item.url, $event)"
-                @input="onScrub(item.url, parseFloat($event.target.value))"
             >
                 <k-range-field
                     :min="0"
@@ -23,6 +20,7 @@
                     :value="seekTimes[item.url] ?? 0"
                     :help="$t('video-thumbnail.slider.help')"
                     :tooltip="{ before: formatTime(seekTimes[item.url] ?? 0) }"
+                    @input="onScrub(item.url, $event)"
                 />
             </li>
         </template>
@@ -47,6 +45,7 @@ export default {
     data() {
         return {
             thumbMap: new Map(),
+            thumbnailJobs: new Map(),
             thumbnailOptions: null,
             thumbnailOptionsPromise: null,
             durations: {},
@@ -78,11 +77,14 @@ export default {
             wrapped.vtWrapped = true;
             upload.on.done = wrapped;
         }
+
+        this.wrapUploadSubmit();
     },
 
     unmounted() {
         window.removeEventListener('vt:duration-ready', this.onDurationReady);
         window.removeEventListener('video-thumbnail-update', this.handleThumbnailUpdate);
+        this.restoreUploadSubmit();
     },
 
     watch: {
@@ -101,33 +103,20 @@ export default {
         },
 
         onScrub(videoUrl, time) {
+            time = Number(time);
+            if (Number.isFinite(time) === false) return;
+
             this.$set(this.seekTimes, videoUrl, time);
             window.dispatchEvent(new CustomEvent('vt:seek-preview', {
                 detail: { videoUrl, time }
             }));
         },
 
-        onSliderDrag(videoUrl, event) {
-            if (event.buttons === 0) return;
-            const input = event.currentTarget.querySelector('input[type=range]');
-            if (input) this.onScrub(videoUrl, parseFloat(input.value));
-        },
-
-        async onScrubEnd(videoUrl) {
-            const time = this.seekTimes[videoUrl] ?? 0.5;
-            const options = await this.getThumbnailOptions();
-            const extension = this.thumbnailExtension(options);
-            const mimeType = this.thumbnailMimeType(extension);
-            const blob = await this.captureBlob(videoUrl, time, mimeType);
-
-            if (blob) this.updateThumb(videoUrl, blob);
-        },
-
         processAdditions(newItems, oldItems) {
             newItems?.forEach(item => {
                 if (item.type?.startsWith('video/') && !this.thumbMap.has(item.url)) {
                     this.thumbMap.set(item.url, null);
-                    this.addThumbnail(item);
+                    this.ensureThumbnail(item, 0.5).catch(error => this.handleThumbnailError(error));
                 }
             });
         },
@@ -139,20 +128,55 @@ export default {
                 const thumbId = this.thumbMap.get(item.url);
                 if (thumbId) this.$panel.upload.remove(thumbId);
                 this.thumbMap.delete(item.url);
+                this.thumbnailJobs.delete(item.url);
                 this.$delete(this.durations, item.url);
                 this.$delete(this.seekTimes, item.url);
             });
         },
 
-        async addThumbnail(videoItem) {
+        async prepareThumbnailsForSubmit() {
+            const videos = this.visibleItems.filter(item => item.type?.startsWith('video/'));
+
+            for (const videoItem of videos) {
+                const time = this.seekTimes[videoItem.url] ?? 0.5;
+                const ready = await this.ensureThumbnail(videoItem, time);
+
+                if (ready !== true) {
+                    throw new Error('The video thumbnail could not be generated.');
+                }
+            }
+        },
+
+        async ensureThumbnail(videoItem, time) {
+            const activeJob = this.thumbnailJobs.get(videoItem.url);
+            if (activeJob) await activeJob;
+
+            const job = this.writeThumbnail(videoItem, time).finally(() => {
+                if (this.thumbnailJobs.get(videoItem.url) === job) {
+                    this.thumbnailJobs.delete(videoItem.url);
+                }
+            });
+
+            this.thumbnailJobs.set(videoItem.url, job);
+
+            return job;
+        },
+
+        async writeThumbnail(videoItem, time) {
             const options = await this.getThumbnailOptions();
             const extension = this.thumbnailExtension(options);
             const mimeType = this.thumbnailMimeType(extension);
-            const blob = await this.captureBlob(videoItem.url, 0.5, mimeType);
-            if (!blob) return;
+            const blob = await this.captureBlob(videoItem.url, time, mimeType);
+
+            if (!blob) return false;
 
             const name     = this.thumbnailName(videoItem, options);
             const filename = this.thumbnailFilename(name, extension);
+
+            if (this.updateThumb(videoItem.url, blob, { extension, filename, mimeType, name }) === true) {
+                return true;
+            }
+
             const file     = new File([blob], filename, { type: mimeType });
             const id       = Date.now().toString(36) + Math.random().toString(36).slice(2);
 
@@ -175,6 +199,8 @@ export default {
 
             this.thumbMap.set(videoItem.url, id);
             this.$panel.upload.files = [...this.$panel.upload.files, thumbItem];
+
+            return true;
         },
 
         captureBlob(url, time, mimeType = 'image/jpeg') {
@@ -217,21 +243,35 @@ export default {
             });
         },
 
-        updateThumb(videoUrl, blob) {
+        updateThumb(videoUrl, blob, options = {}) {
             const thumbId = this.thumbMap.get(videoUrl);
-            if (!thumbId) return;
+            if (!thumbId) return false;
             const files = this.$panel.upload.files;
             const idx = files.findIndex(f => f.id === thumbId);
-            if (idx === -1) return;
+            if (idx === -1) return false;
 
             const old = files[idx];
-            const file = new File([blob], old.filename, { type: old.type || 'image/jpeg' });
+            const file = new File([blob], options.filename ?? old.filename, {
+                type: options.mimeType ?? old.type ?? 'image/jpeg'
+            });
             if (old.url?.startsWith('blob:')) URL.revokeObjectURL(old.url);
             const url = URL.createObjectURL(file);
 
             const newFiles = [...files];
-            newFiles[idx] = { ...old, src: file, url, size: file.size, niceSize: this.formatSize(file.size) };
+            newFiles[idx] = {
+                ...old,
+                extension: options.extension ?? old.extension,
+                filename: options.filename ?? old.filename,
+                name: options.name ?? old.name,
+                niceSize: this.formatSize(file.size),
+                size: file.size,
+                src: file,
+                type: options.mimeType ?? old.type,
+                url
+            };
             this.$panel.upload.files = newFiles;
+
+            return true;
         },
 
         handleThumbnailUpdate({ detail: { videoUrl, blob } }) {
@@ -240,12 +280,6 @@ export default {
 
         async getThumbnailOptions() {
             if (this.thumbnailOptions) {
-                return this.thumbnailOptions;
-            }
-
-            if (!this.$api?.get) {
-                this.thumbnailOptions = { ...defaultThumbnailOptions };
-
                 return this.thumbnailOptions;
             }
 
@@ -258,15 +292,46 @@ export default {
                         };
 
                         return this.thumbnailOptions;
-                    })
-                    .catch(() => {
-                        this.thumbnailOptions = { ...defaultThumbnailOptions };
-
-                        return this.thumbnailOptions;
                     });
             }
 
             return this.thumbnailOptionsPromise;
+        },
+
+        wrapUploadSubmit() {
+            const upload = this.$panel.upload;
+            if (!upload?.submit || upload.submit.vtWrapped) return;
+
+            this._originalUploadSubmit = upload.submit;
+            this._wrappedUploadSubmit = async (...args) => {
+                try {
+                    await this.prepareThumbnailsForSubmit();
+                } catch (error) {
+                    this.handleThumbnailError(error);
+                    return;
+                }
+
+                return this._originalUploadSubmit.apply(upload, args);
+            };
+
+            this._wrappedUploadSubmit.vtWrapped = true;
+            upload.submit = this._wrappedUploadSubmit;
+        },
+
+        restoreUploadSubmit() {
+            const upload = this.$panel.upload;
+
+            if (upload?.submit === this._wrappedUploadSubmit) {
+                upload.submit = this._originalUploadSubmit;
+            }
+        },
+
+        handleThumbnailError(error) {
+            if (this.$panel?.error) {
+                this.$panel.error(error, false);
+            } else {
+                console.error(error);
+            }
         },
 
         isThumbnailItem(item) {

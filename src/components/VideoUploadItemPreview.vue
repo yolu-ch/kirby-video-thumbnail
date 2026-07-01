@@ -98,7 +98,9 @@ export default {
                 window.dispatchEvent(new CustomEvent('vt:duration-ready', {
                     detail: { videoUrl: url, duration }
                 }));
-                video.addEventListener('seeked', () => this.drawFrame(), { once: true });
+                video.addEventListener('seeked', () => {
+                    this.afterFrameReady(video, () => this.drawFrame());
+                }, { once: true });
                 video.currentTime = Math.min(0.5, duration);
             }, { once: true });
 
@@ -118,12 +120,25 @@ export default {
             const time = this._pendingSeek;
             this._pendingSeek = null;
             this._seeking = true;
-            this.videoEl.addEventListener('seeked', () => {
-                this._seeking = false;
-                this.drawFrame();
-                if (this._pendingSeek != null) this._doNextSeek();
+            const video = this.videoEl;
+            video.addEventListener('seeked', () => {
+                this.afterFrameReady(video, () => {
+                    this._seeking = false;
+                    this.drawFrame();
+                    if (this._pendingSeek != null) this._doNextSeek();
+                });
             }, { once: true });
-            this.videoEl.currentTime = time;
+            video.currentTime = time;
+        },
+
+        afterFrameReady(video, callback) {
+            if (typeof video.requestVideoFrameCallback === 'function') {
+                video.requestVideoFrameCallback(() => {
+                    setTimeout(callback, 50);
+                });
+            } else {
+                setTimeout(callback, 300);
+            }
         },
 
         drawFrame() {

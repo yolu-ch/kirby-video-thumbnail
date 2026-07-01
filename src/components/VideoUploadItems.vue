@@ -180,7 +180,17 @@ export default {
                     canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.85);
                 };
 
-                video.addEventListener('seeked', draw, { once: true });
+                const capture = () => {
+                    if (typeof video.requestVideoFrameCallback === 'function') {
+                        video.requestVideoFrameCallback(() => {
+                            setTimeout(draw, 50);
+                        });
+                    } else {
+                        setTimeout(draw, 300);
+                    }
+                };
+
+                video.addEventListener('seeked', capture, { once: true });
                 video.addEventListener('loadedmetadata', () => {
                     video.currentTime = Math.min(time, video.duration);
                 }, { once: true });

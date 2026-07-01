@@ -49,6 +49,21 @@ function thumbnailOptions(): array
     ];
 }
 
+function matchingVideoExists(File $file): bool
+{
+    $page = $file->page();
+
+    if ($page === null) {
+        return false;
+    }
+
+    return $page->files()->filter(
+        static fn (File $sibling): bool =>
+            $sibling->type() === 'video' &&
+            $sibling->name() === $file->name()
+    )->first() instanceof File;
+}
+
 function isThumbnailFile(File $file): bool
 {
     if (strtolower($file->extension()) !== thumbnailExtension()) {
@@ -67,7 +82,11 @@ function isThumbnailFile(File $file): bool
         return false;
     }
 
-    return $prefix !== '' || $suffix !== '';
+    if ($prefix !== '' || $suffix !== '') {
+        return true;
+    }
+
+    return matchingVideoExists($file);
 }
 
 Kirby::plugin('yolu/video-thumbnail', [

@@ -81,6 +81,8 @@ return [
 
 Supported thumbnail extensions are `jpg`, `jpeg`, `png` and `webp`.
 
+If `prefix` and `suffix` are both empty, the generated thumbnail keeps the video's basename. For example, `example.mp4` creates `example.jpg`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE)

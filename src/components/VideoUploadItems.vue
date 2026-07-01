@@ -64,27 +64,17 @@ export default {
         window.addEventListener('vt:duration-ready', this.onDurationReady);
         window.addEventListener('video-thumbnail-update', this.handleThumbnailUpdate);
 
-        // The generated thumb rides along in the field's upload queue so the
-        // slider preview works, but FilesField.on.done() selects every completed
-        // upload unconditionally. Strip the thumb from that selection so only the
-        // uploaded media lands in the field; the thumb still uploads as a sibling
-        // file, to be found by naming convention (e.g. File::poster()).
-        const upload = this.$panel.upload;
-        const done = upload.on?.done;
-        if (done && !done.vtWrapped) {
-            const wrapped = (files) =>
-                done(files.filter(file => !this.isThumbnailItem(file)));
-            wrapped.vtWrapped = true;
-            upload.on.done = wrapped;
-        }
-
+        this.wrapUploadDone();
+        this.wrapUploadFile();
         this.wrapUploadSubmit();
     },
 
+    beforeDestroy() {
+        this.teardown();
+    },
+
     unmounted() {
-        window.removeEventListener('vt:duration-ready', this.onDurationReady);
-        window.removeEventListener('video-thumbnail-update', this.handleThumbnailUpdate);
-        this.restoreUploadSubmit();
+        this.teardown();
     },
 
     watch: {
@@ -95,6 +85,14 @@ export default {
     },
 
     methods: {
+        teardown() {
+            window.removeEventListener('vt:duration-ready', this.onDurationReady);
+            window.removeEventListener('video-thumbnail-update', this.handleThumbnailUpdate);
+            this.restoreUploadDone();
+            this.restoreUploadFile();
+            this.restoreUploadSubmit();
+        },
+
         onDurationReady({ detail: { videoUrl, duration } }) {
             this.$set(this.durations, videoUrl, duration);
             if (this.seekTimes[videoUrl] == null) {
@@ -296,6 +294,62 @@ export default {
             }
 
             return this.thumbnailOptionsPromise;
+        },
+
+        wrapUploadDone() {
+            const upload = this.$panel.upload;
+            const done = upload.on?.done;
+            if (!done || done.vtWrapped) return;
+
+            this._originalUploadDone = done;
+            this._wrappedUploadDone = (files) =>
+                done(files.filter(file => !this.isThumbnailItem(file)));
+            this._wrappedUploadDone.vtWrapped = true;
+            upload.on.done = this._wrappedUploadDone;
+        },
+
+        restoreUploadDone() {
+            const upload = this.$panel.upload;
+
+            if (upload?.on?.done === this._wrappedUploadDone) {
+                upload.on.done = this._originalUploadDone;
+            }
+        },
+
+        wrapUploadFile() {
+            const upload = this.$panel.upload;
+            if (!upload?.upload || upload.upload.vtWrapped) return;
+
+            this._originalUploadFile = upload.upload;
+            this._wrappedUploadFile = async (file, attributes = {}) => {
+                const isThumbnail = this.isThumbnailItem(file);
+
+                if (isThumbnail === true) {
+                    const options = await this.getThumbnailOptions();
+                    attributes = {
+                        ...attributes,
+                        template: options.template ?? defaultThumbnailOptions.template
+                    };
+                }
+
+                const result = await this._originalUploadFile.call(upload, file, attributes);
+
+                if (isThumbnail === true && file.model) {
+                    file.model.videoThumbnail = true;
+                }
+
+                return result;
+            };
+            this._wrappedUploadFile.vtWrapped = true;
+            upload.upload = this._wrappedUploadFile;
+        },
+
+        restoreUploadFile() {
+            const upload = this.$panel.upload;
+
+            if (upload?.upload === this._wrappedUploadFile) {
+                upload.upload = this._originalUploadFile;
+            }
         },
 
         wrapUploadSubmit() {

@@ -70,21 +70,22 @@ export default {
         window.addEventListener('vt:seek-preview', this.onSeekPreview);
     },
 
-    beforeUnmount() {
-        window.removeEventListener('vt:seek-preview', this.onSeekPreview);
-        if (this.videoEl) { this.videoEl.src = ''; this.videoEl = null; }
+    beforeDestroy() {
+        this.teardown();
     },
 
-    watch: {
-        url(newUrl) {
-            if (this.isVideo && newUrl) {
-                this.hasFrame = false;
-                this.captureFrame(newUrl);
-            }
-        }
+    beforeUnmount() {
+        this.teardown();
     },
 
     methods: {
+        teardown() {
+            window.removeEventListener('vt:seek-preview', this.onSeekPreview);
+            if (this.videoEl) { this.videoEl.src = ''; this.videoEl = null; }
+            this._pendingSeek = null;
+            this._seeking = false;
+        },
+
         captureFrame(url) {
             if (this.videoEl) this.videoEl.src = '';
             const video = document.createElement('video');
@@ -98,10 +99,7 @@ export default {
                 window.dispatchEvent(new CustomEvent('vt:duration-ready', {
                     detail: { videoUrl: url, duration }
                 }));
-                video.addEventListener('seeked', () => {
-                    this.afterFrameReady(video, () => this.drawFrame());
-                }, { once: true });
-                video.currentTime = Math.min(0.5, duration);
+                this.seekTo(Math.min(0.5, duration), () => this.drawFrame());
             }, { once: true });
 
             video.addEventListener('error', () => {}, { once: true });
@@ -120,24 +118,63 @@ export default {
             const time = this._pendingSeek;
             this._pendingSeek = null;
             this._seeking = true;
+            this.seekTo(time, () => {
+                this._seeking = false;
+                this.drawFrame();
+                if (this._pendingSeek != null) this._doNextSeek();
+            });
+        },
+
+        seekTo(time, callback) {
             const video = this.videoEl;
-            video.addEventListener('seeked', () => {
-                this.afterFrameReady(video, () => {
-                    this._seeking = false;
-                    this.drawFrame();
-                    if (this._pendingSeek != null) this._doNextSeek();
-                });
-            }, { once: true });
-            video.currentTime = time;
+            if (!video) return;
+
+            const duration = Number.isFinite(video.duration) ? video.duration : 0;
+            const target = Math.max(0, Math.min(Number(time) || 0, duration));
+            let finished = false;
+            let timeout = null;
+
+            const finish = () => {
+                if (finished === true) return;
+                finished = true;
+                clearTimeout(timeout);
+                video.removeEventListener('seeked', finish);
+                this.afterFrameReady(video, callback);
+            };
+
+            timeout = setTimeout(finish, 800);
+
+            if (video.readyState >= 2 && Math.abs(video.currentTime - target) < 0.01) {
+                finish();
+                return;
+            }
+
+            video.addEventListener('seeked', finish, { once: true });
+
+            try {
+                video.currentTime = target;
+            } catch (error) {
+                finish();
+            }
         },
 
         afterFrameReady(video, callback) {
+            let done = false;
+
+            const finish = () => {
+                if (done === true) return;
+                done = true;
+                callback();
+            };
+
             if (typeof video.requestVideoFrameCallback === 'function') {
+                const timeout = setTimeout(finish, 300);
                 video.requestVideoFrameCallback(() => {
-                    setTimeout(callback, 50);
+                    clearTimeout(timeout);
+                    setTimeout(finish, 50);
                 });
             } else {
-                setTimeout(callback, 300);
+                setTimeout(finish, 300);
             }
         },
 
@@ -148,6 +185,15 @@ export default {
             canvas.height = this.videoEl.videoHeight || 180;
             canvas.getContext('2d').drawImage(this.videoEl, 0, 0);
             this.hasFrame = true;
+        }
+    },
+
+    watch: {
+        url(newUrl) {
+            if (this.isVideo && newUrl) {
+                this.hasFrame = false;
+                this.captureFrame(newUrl);
+            }
         }
     }
 };

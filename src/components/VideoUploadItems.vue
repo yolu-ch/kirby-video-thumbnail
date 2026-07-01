@@ -55,7 +55,7 @@ export default {
 
     computed: {
         visibleItems() {
-            return this.items?.filter(item => !this.isThumbnailItem(item)) ?? [];
+            return this.items?.filter(item => !this.isHiddenThumbnailItem(item)) ?? [];
         }
     },
 
@@ -340,6 +340,10 @@ export default {
             if (item.id && [...this.thumbMap.values()].includes(item.id)) return true;
 
             return item.filename?.endsWith('_thumb.jpg') === true;
+        },
+
+        isHiddenThumbnailItem(item) {
+            return this.isThumbnailItem(item) === true && !item.error;
         },
 
         thumbnailName(videoItem, options) {

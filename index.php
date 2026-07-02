@@ -57,11 +57,42 @@ function matchingVideoExists(File $file): bool
         return false;
     }
 
+    $name = thumbnailVideoName($file);
+
+    if ($name === null) {
+        return false;
+    }
+
     return $page->files()->filter(
         static fn (File $sibling): bool =>
             $sibling->type() === 'video' &&
-            $sibling->name() === $file->name()
+            $sibling->name() === $name
     )->first() instanceof File;
+}
+
+function thumbnailVideoName(File $file): ?string
+{
+    $name   = $file->name();
+    $prefix = thumbnailPrefix();
+    $suffix = thumbnailSuffix();
+
+    if ($prefix !== '') {
+        if (str_starts_with($name, $prefix) === false) {
+            return null;
+        }
+
+        $name = substr($name, strlen($prefix));
+    }
+
+    if ($suffix !== '') {
+        if (str_ends_with($name, $suffix) === false) {
+            return null;
+        }
+
+        $name = substr($name, 0, -strlen($suffix));
+    }
+
+    return $name !== '' ? $name : null;
 }
 
 function isThumbnailFile(File $file): bool
@@ -80,10 +111,6 @@ function isThumbnailFile(File $file): bool
 
     if ($suffix !== '' && str_ends_with($name, $suffix) === false) {
         return false;
-    }
-
-    if ($prefix !== '' || $suffix !== '') {
-        return true;
     }
 
     return matchingVideoExists($file);

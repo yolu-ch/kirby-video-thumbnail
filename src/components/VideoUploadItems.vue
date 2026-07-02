@@ -147,7 +147,15 @@ export default {
 
         async ensureThumbnail(videoItem, time) {
             const activeJob = this.thumbnailJobs.get(videoItem.url);
-            if (activeJob) await activeJob;
+            if (activeJob) {
+                try {
+                    await activeJob;
+                } catch (error) {
+                    if (this.thumbnailJobs.get(videoItem.url) === activeJob) {
+                        this.thumbnailJobs.delete(videoItem.url);
+                    }
+                }
+            }
 
             const job = this.writeThumbnail(videoItem, time).finally(() => {
                 if (this.thumbnailJobs.get(videoItem.url) === job) {
@@ -208,34 +216,71 @@ export default {
                 video.playsInline = true;
                 video.preload = 'auto';
                 let done = false;
+                let metadataTimeout = null;
+                let seekTimeout = null;
+                let frameTimeout = null;
+                let drawTimeout = null;
+
+                const cleanup = () => {
+                    clearTimeout(metadataTimeout);
+                    clearTimeout(seekTimeout);
+                    clearTimeout(frameTimeout);
+                    clearTimeout(drawTimeout);
+                    video.removeEventListener('seeked', capture);
+                    video.src = '';
+                };
+
+                const finish = blob => {
+                    if (done) return;
+                    done = true;
+                    cleanup();
+                    resolve(blob);
+                };
 
                 const draw = () => {
                     if (done) return;
-                    done = true;
                     const canvas = document.createElement('canvas');
                     canvas.width  = video.videoWidth  || 320;
                     canvas.height = video.videoHeight || 180;
-                    canvas.getContext('2d').drawImage(video, 0, 0);
-                    video.src = '';
-                    canvas.toBlob(blob => resolve(blob), mimeType, 0.85);
+                    try {
+                        canvas.getContext('2d').drawImage(video, 0, 0);
+                        canvas.toBlob(blob => finish(blob), mimeType, 0.85);
+                    } catch (error) {
+                        finish(null);
+                    }
                 };
 
                 const capture = () => {
+                    clearTimeout(seekTimeout);
+
                     if (typeof video.requestVideoFrameCallback === 'function') {
+                        frameTimeout = setTimeout(draw, 300);
                         video.requestVideoFrameCallback(() => {
-                            setTimeout(draw, 50);
+                            clearTimeout(frameTimeout);
+                            drawTimeout = setTimeout(draw, 50);
                         });
                     } else {
-                        setTimeout(draw, 300);
+                        drawTimeout = setTimeout(draw, 300);
                     }
                 };
 
                 video.addEventListener('seeked', capture, { once: true });
                 video.addEventListener('loadedmetadata', () => {
-                    video.currentTime = Math.min(time, video.duration);
-                }, { once: true });
-                video.addEventListener('error', () => { if (!done) { done = true; resolve(null); } }, { once: true });
+                    clearTimeout(metadataTimeout);
+                    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+                    const target = Math.max(0, Math.min(Number(time) || 0, duration));
 
+                    seekTimeout = setTimeout(capture, 800);
+
+                    try {
+                        video.currentTime = target;
+                    } catch (error) {
+                        capture();
+                    }
+                }, { once: true });
+                video.addEventListener('error', () => finish(null), { once: true });
+
+                metadataTimeout = setTimeout(() => finish(null), 10000);
                 video.src = url;
                 video.load();
             });
@@ -290,6 +335,10 @@ export default {
                         };
 
                         return this.thumbnailOptions;
+                    })
+                    .catch(error => {
+                        this.thumbnailOptionsPromise = null;
+                        throw error;
                     });
             }
 
@@ -393,7 +442,34 @@ export default {
             if (item.videoThumbnail === true) return true;
             if (item.id && [...this.thumbMap.values()].includes(item.id)) return true;
 
-            return item.filename?.endsWith('_thumb.jpg') === true;
+            return this.isThumbnailFilename(item.filename) === true;
+        },
+
+        isThumbnailFilename(filename) {
+            if (!filename) return false;
+
+            const options = this.thumbnailOptions ?? defaultThumbnailOptions;
+            const extension = this.thumbnailExtension(options);
+            const lowerFilename = String(filename).toLowerCase();
+            const expectedExtension = `.${extension}`;
+
+            if (lowerFilename.endsWith(expectedExtension) === false) {
+                return false;
+            }
+
+            const name = String(filename).slice(0, -expectedExtension.length);
+            const prefix = options.prefix ?? '';
+            const suffix = options.suffix ?? '';
+
+            if (prefix !== '' && name.startsWith(prefix) === false) {
+                return false;
+            }
+
+            if (suffix !== '' && name.endsWith(suffix) === false) {
+                return false;
+            }
+
+            return prefix !== '' || suffix !== '';
         },
 
         isHiddenThumbnailItem(item) {

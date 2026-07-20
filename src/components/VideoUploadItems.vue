@@ -147,6 +147,10 @@ export default {
                     headers: { 'x-csrf': this.$panel.system.csrf },
                     body: formData
                 });
+                // the video's own upload already triggered a reload before
+                // this thumbnail existed on disk, so its preview image
+                // needs a second nudge once the thumbnail is actually there
+                this.$events.emit('model.update');
             } catch (error) {
                 this.$panel.error(error);
             }

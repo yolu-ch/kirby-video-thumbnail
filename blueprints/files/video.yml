@@ -1,0 +1,10 @@
+title: Video
+
+image:
+  query: file.videoThumb
+  cover: true
+
+fields:
+  title:
+    label: Title
+    type: text

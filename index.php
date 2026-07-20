@@ -4,13 +4,36 @@ use Kirby\Cms\App as Kirby;
 
 Kirby::plugin('yolu/video-thumbnail', [
     'blueprints' => [
-        'files/thumb' => __DIR__ . '/blueprints/files/thumb.yml'
+        'files/thumb' => __DIR__ . '/blueprints/files/thumb.yml',
+        'files/video' => __DIR__ . '/blueprints/files/video.yml'
+    ],
+    'fileMethods' => [
+        'videoThumb' => function () {
+            if (str_starts_with($this->type(), 'video') === false) {
+                return null;
+            }
+
+            return $this->parent()->file($this->name() . '_thumb.jpg');
+        }
     ],
     'hooks' => [
         'file.create:after' => function ($file) {
             if (str_ends_with($file->filename(), '_thumb.jpg')) {
                 $file->changeTemplate('thumb');
+                return;
             }
+
+            if (str_starts_with($file->type(), 'video')) {
+                $file->changeTemplate('video');
+            }
+        },
+        'file.delete:before' => function ($file) {
+            if (str_starts_with($file->type(), 'video') === false) {
+                return;
+            }
+
+            $thumb = $file->parent()->file($file->name() . '_thumb.jpg');
+            $thumb?->delete();
         }
     ],
     'translations' => [

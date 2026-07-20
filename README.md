@@ -17,6 +17,8 @@ A Kirby Panel plugin that automatically generates a JPEG thumbnail from a video 
 - Slider to scrub through the video and choose any frame as the thumbnail
 - Thumbnail is uploaded alongside the video as `{videoname}_thumb.jpg`
 - Thumbnail file automatically gets the `thumb` template applied via a hook
+- Video file automatically gets the `video` template applied, which uses the thumbnail as its Panel preview image instead of the generic video icon
+- Thumbnail is deleted automatically when its video is deleted
 - Works with any browser-supported video format (MP4, WebM, etc.) — WebM requires Safari 16+
 
 ## Requirements
@@ -49,6 +51,25 @@ extends: files/thumb
 fields:
   alt:
     type: text
+```
+
+The video file itself receives the `video` file template, which you can extend the same way:
+
+```yaml
+# site/blueprints/files/video.yml
+extends: files/video
+
+fields:
+  caption:
+    type: text
+```
+
+Since the thumbnail is a regular file living next to the video, hide it from your files sections by filtering out its template:
+
+```yaml
+files:
+  type: files
+  query: page.files.filterBy('template', '!=', 'thumb')
 ```
 
 ## License

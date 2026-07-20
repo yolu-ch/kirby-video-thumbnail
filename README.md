@@ -15,7 +15,7 @@ A Kirby Panel plugin that automatically generates a JPEG thumbnail from a video 
 - Captures a frame from the video client-side (no server-side processing)
 - Live preview of the selected frame in the upload item
 - Slider to scrub through the video and choose any frame as the thumbnail
-- Thumbnail is uploaded alongside the video as `{videoname}_thumb.jpg`
+- Thumbnail is uploaded alongside the video as `{videoname}_thumb.jpg`, uploaded independently of the video so it never counts towards a `files` field's `max` (works the same in `files` sections and in `files` fields, including `multiple: false`)
 - Thumbnail file automatically gets the `thumb` template applied via a hook
 - Video file automatically gets the `video` template applied, which uses the thumbnail as its Panel preview image instead of the generic video icon
 - Thumbnail is deleted automatically when its video is deleted

@@ -1,6 +1,6 @@
 <template>
     <ul class="k-upload-items">
-        <template v-for="item in visibleItems">
+        <template v-for="item in items">
             <k-upload-item
                 v-bind="item"
                 :id="item.id"
@@ -39,33 +39,35 @@ export default {
 
     data() {
         return {
-            thumbMap: new Map(),
+            // videoUrl -> current thumbnail Blob, kept locally so it never
+            // takes a slot in $panel.upload.files (and thus never counts
+            // towards a field's `max`)
+            blobs: new Map(),
+            // videoUrl -> true once its thumbnail has been uploaded
+            uploaded: new Set(),
             durations: {},
             seekTimes: {}
         };
     },
 
-    computed: {
-        visibleItems() {
-            return this.items?.filter(item => !item.filename?.endsWith('_thumb.jpg')) ?? [];
-        }
-    },
-
     mounted() {
-        this.processAdditions(this.items, []);
+        this.processAdditions(this.items);
+        this.processCompletions(this.items);
         window.addEventListener('vt:duration-ready', this.onDurationReady);
-        window.addEventListener('video-thumbnail-update', this.handleThumbnailUpdate);
     },
 
     unmounted() {
         window.removeEventListener('vt:duration-ready', this.onDurationReady);
-        window.removeEventListener('video-thumbnail-update', this.handleThumbnailUpdate);
     },
 
     watch: {
-        items(newItems, oldItems) {
-            this.processAdditions(newItems, oldItems);
-            this.processRemovals(newItems, oldItems);
+        items: {
+            deep: true,
+            handler(newItems, oldItems) {
+                this.processAdditions(newItems);
+                this.processRemovals(newItems, oldItems);
+                this.processCompletions(newItems);
+            }
         }
     },
 
@@ -93,15 +95,17 @@ export default {
         onScrubEnd(videoUrl) {
             const time = this.seekTimes[videoUrl] ?? 0.5;
             this.captureBlob(videoUrl, time).then(blob => {
-                if (blob) this.updateThumb(videoUrl, blob);
+                if (blob) this.blobs.set(videoUrl, blob);
             });
         },
 
-        processAdditions(newItems, oldItems) {
+        processAdditions(newItems) {
             newItems?.forEach(item => {
-                if (item.type?.startsWith('video/') && !this.thumbMap.has(item.url)) {
-                    this.thumbMap.set(item.url, null);
-                    this.addThumbnail(item);
+                if (item.type?.startsWith('video/') && !this.blobs.has(item.url)) {
+                    this.blobs.set(item.url, null);
+                    this.captureBlob(item.url, 0.5).then(blob => {
+                        if (blob) this.blobs.set(item.url, blob);
+                    });
                 }
             });
         },
@@ -110,41 +114,42 @@ export default {
             oldItems?.forEach(item => {
                 if (!item.type?.startsWith('video/')) return;
                 if (newItems?.some(i => i.id === item.id)) return;
-                const thumbId = this.thumbMap.get(item.url);
-                if (thumbId) this.$panel.upload.remove(thumbId);
-                this.thumbMap.delete(item.url);
+                this.blobs.delete(item.url);
+                this.uploaded.delete(item.url);
                 this.$delete(this.durations, item.url);
                 this.$delete(this.seekTimes, item.url);
             });
         },
 
-        async addThumbnail(videoItem) {
-            const blob = await this.captureBlob(videoItem.url, 0.5);
+        processCompletions(items) {
+            items?.forEach(item => {
+                if (!item.type?.startsWith('video/')) return;
+                if (!item.completed || !item.model) return;
+                if (this.uploaded.has(item.url)) return;
+
+                this.uploaded.add(item.url);
+                this.uploadThumbnail(item);
+            });
+        },
+
+        async uploadThumbnail(videoItem) {
+            const blob = this.blobs.get(videoItem.url);
             if (!blob) return;
 
-            const name     = videoItem.name + '_thumb';
-            const filename = name + '.jpg';
-            const file     = new File([blob], filename, { type: 'image/jpeg' });
-            const id       = Date.now().toString(36) + Math.random().toString(36).slice(2);
+            const filename = videoItem.name + '_thumb.jpg';
+            const file = new File([blob], filename, { type: 'image/jpeg' });
+            const formData = new FormData();
+            formData.append('file', file, filename);
 
-            const thumbItem = {
-                completed: false,
-                error:     null,
-                extension: 'jpg',
-                filename,
-                id,
-                model:     null,
-                name,
-                niceSize:  this.formatSize(file.size),
-                progress:  0,
-                size:      file.size,
-                src:       file,
-                type:      'image/jpeg',
-                url:       URL.createObjectURL(file)
-            };
-
-            this.thumbMap.set(videoItem.url, id);
-            this.$panel.upload.files = [...this.$panel.upload.files, thumbItem];
+            try {
+                await fetch(this.$panel.upload.url, {
+                    method: 'POST',
+                    headers: { 'x-csrf': this.$panel.system.csrf },
+                    body: formData
+                });
+            } catch (error) {
+                this.$panel.error(error);
+            }
         },
 
         captureBlob(url, time) {
@@ -177,38 +182,11 @@ export default {
             });
         },
 
-        updateThumb(videoUrl, blob) {
-            const thumbId = this.thumbMap.get(videoUrl);
-            if (!thumbId) return;
-            const files = this.$panel.upload.files;
-            const idx = files.findIndex(f => f.id === thumbId);
-            if (idx === -1) return;
-
-            const old = files[idx];
-            const file = new File([blob], old.filename, { type: 'image/jpeg' });
-            if (old.url?.startsWith('blob:')) URL.revokeObjectURL(old.url);
-            const url = URL.createObjectURL(file);
-
-            const newFiles = [...files];
-            newFiles[idx] = { ...old, src: file, url, size: file.size, niceSize: this.formatSize(file.size) };
-            this.$panel.upload.files = newFiles;
-        },
-
-        handleThumbnailUpdate({ detail: { videoUrl, blob } }) {
-            this.updateThumb(videoUrl, blob);
-        },
-
         formatTime(seconds) {
             const h = Math.floor(seconds / 3600);
             const m = Math.floor((seconds % 3600) / 60);
             const s = Math.floor(seconds % 60);
             return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-        },
-
-        formatSize(bytes) {
-            if (bytes < 1024) return bytes + ' B';
-            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-            return (bytes / 1048576).toFixed(1) + ' MB';
         }
     }
 };

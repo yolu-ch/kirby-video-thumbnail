@@ -2,9 +2,15 @@ title: Video
 
 image:
   query: file.videoThumb
+  ratio: 16/9
   cover: true
 
 fields:
   title:
     label: Title
     type: text
+
+  duration:
+    label: Duration (seconds)
+    type: text
+    disabled: true

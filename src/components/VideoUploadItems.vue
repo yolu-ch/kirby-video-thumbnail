@@ -141,6 +141,11 @@ export default {
             const formData = new FormData();
             formData.append('file', file, filename);
 
+            const duration = this.durations[videoItem.url];
+            if (duration != null) {
+                formData.append('duration', duration);
+            }
+
             try {
                 await fetch(this.$panel.upload.url, {
                     method: 'POST',
@@ -148,10 +153,11 @@ export default {
                     body: formData
                 });
                 // the video's own upload already refreshed the field/section
-                // before this thumbnail existed on disk, so its preview image
-                // needs a second, full view refresh once the thumbnail is
-                // actually there — sections/fields don't reliably reload on
-                // a plain model.update event
+                // before this thumbnail existed on disk. Files sections only
+                // re-fetch (and thus re-apply their `query` filter that hides
+                // the thumbnail) in reaction to a `model.update` event — a
+                // plain view refresh alone doesn't reliably trigger that.
+                this.$events.emit('model.update');
                 await this.$panel.view.refresh();
             } catch (error) {
                 this.$panel.error(error);

@@ -20,6 +20,18 @@ Kirby::plugin('yolu/video-thumbnail', [
         'file.create:after' => function ($file) {
             if (str_ends_with($file->filename(), '_thumb.jpg')) {
                 $file->changeTemplate('thumb');
+
+                $duration = kirby()->request()->body()->get('duration');
+                if ($duration !== null) {
+                    $baseName = substr($file->filename(), 0, -strlen('_thumb.jpg'));
+                    $video = $file->parent()->files()
+                        ->filterBy('name', $baseName)
+                        ->filterBy('type', 'video')
+                        ->first();
+
+                    $video?->update(['duration' => round((float) $duration, 2)]);
+                }
+
                 return;
             }
 

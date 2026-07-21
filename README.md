@@ -15,8 +15,9 @@ A Kirby Panel plugin that automatically generates a JPEG thumbnail from a video 
 - Captures a frame from the video client-side (no server-side processing)
 - Live preview of the selected frame in the upload item
 - Slider to scrub through the video and choose any frame as the thumbnail
-- Thumbnail is uploaded alongside the video as `{videoname}_thumb.jpg`, uploaded independently of the video so it never counts towards a `files` field's `max` (works the same in `files` sections and in `files` fields, including `multiple: false`)
-- Thumbnail file automatically gets the `thumb` template applied via a hook
+- Thumbnail is uploaded alongside the video as `{videoname}_thumb.jpg` by default, uploaded independently of the video so it never counts towards a `files` field's `max` (works the same in `files` sections and in `files` fields, including `multiple: false`)
+- Thumbnail file automatically gets the `thumb` template applied via a hook by default
+- Thumbnail filename (prefix/suffix/extension) and file template are configurable
 - Video file automatically gets the `video` template applied, which uses the thumbnail as its Panel preview image instead of the generic video icon
 - Thumbnail is deleted automatically when its video is deleted
 - Works with any browser-supported video format (MP4, WebM, etc.) — WebM requires Safari 16+
@@ -72,6 +73,38 @@ files:
   type: files
   query: page.files.filterBy('template', '!=', 'thumb')
 ```
+
+## Options
+
+You can configure the generated thumbnail filename and file template in `site/config/config.php`:
+
+```php
+<?php
+
+return [
+    'yolu.video-thumbnail.template'  => 'thumb',
+    'yolu.video-thumbnail.prefix'    => '',
+    'yolu.video-thumbnail.suffix'    => '_thumb',
+    'yolu.video-thumbnail.extension' => 'jpg'
+];
+```
+
+With the defaults, a video named `example.mp4` creates `example_thumb.jpg`. For example, this configuration creates `poster-example.webp` and applies the `poster` file template:
+
+```php
+<?php
+
+return [
+    'yolu.video-thumbnail.template'  => 'poster',
+    'yolu.video-thumbnail.prefix'    => 'poster-',
+    'yolu.video-thumbnail.suffix'    => '',
+    'yolu.video-thumbnail.extension' => 'webp'
+];
+```
+
+Supported thumbnail extensions are `jpg`, `jpeg`, `png` and `webp`.
+
+If `prefix` and `suffix` are both empty, the generated thumbnail keeps the video's basename. For example, `example.mp4` creates `example.jpg`.
 
 ## License
 

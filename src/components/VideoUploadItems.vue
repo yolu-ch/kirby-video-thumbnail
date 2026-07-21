@@ -12,7 +12,6 @@
                 v-if="item.type?.startsWith('video/') && durations[item.url]"
                 :key="item.id + '-slider'"
                 class="vt-slider-row"
-                @pointerup="onScrubEnd(item.url)"
                 @pointermove="onSliderDrag(item.url, $event)"
                 @input="onScrub(item.url, parseFloat($event.target.value))"
             >
@@ -30,6 +29,13 @@
 </template>
 
 <script>
+const defaultThumbnailOptions = {
+    template: 'thumb',
+    prefix: '',
+    suffix: '_thumb',
+    extension: 'jpg'
+};
+
 export default {
     props: {
         items: Array
@@ -45,6 +51,9 @@ export default {
             blobs: new Map(),
             // videoUrl -> true once its thumbnail has been uploaded
             uploaded: new Set(),
+            // configurable filename/template options, fetched once from the API
+            thumbnailOptions: null,
+            thumbnailOptionsPromise: null,
             durations: {},
             seekTimes: {}
         };
@@ -54,10 +63,23 @@ export default {
         this.processAdditions(this.items);
         this.processCompletions(this.items);
         window.addEventListener('vt:duration-ready', this.onDurationReady);
+        window.addEventListener('video-thumbnail-frame', this.onFrame);
+
+        // tell the preview components which image format to encode frames in
+        this.getThumbnailOptions().then(options => {
+            const mimeType = this.thumbnailMimeType(this.thumbnailExtension(options));
+            window.dispatchEvent(new CustomEvent('vt:capture-mime', {
+                detail: { mimeType }
+            }));
+        });
+    },
+
+    beforeDestroy() {
+        this.teardown();
     },
 
     unmounted() {
-        window.removeEventListener('vt:duration-ready', this.onDurationReady);
+        this.teardown();
     },
 
     watch: {
@@ -72,6 +94,18 @@ export default {
     },
 
     methods: {
+        teardown() {
+            window.removeEventListener('vt:duration-ready', this.onDurationReady);
+            window.removeEventListener('video-thumbnail-frame', this.onFrame);
+        },
+
+        // The preview component decodes and draws the frame the editor sees,
+        // then hands it back here as a blob. That single decode is the source
+        // of truth for the uploaded thumbnail.
+        onFrame({ detail: { videoUrl, blob } }) {
+            if (blob) this.blobs.set(videoUrl, blob);
+        },
+
         onDurationReady({ detail: { videoUrl, duration } }) {
             this.$set(this.durations, videoUrl, duration);
             if (this.seekTimes[videoUrl] == null) {
@@ -92,22 +126,22 @@ export default {
             if (input) this.onScrub(videoUrl, parseFloat(input.value));
         },
 
-        onScrubEnd(videoUrl) {
-            const time = this.seekTimes[videoUrl] ?? 0.5;
-            this.captureBlob(videoUrl, time).then(blob => {
-                if (blob) this.blobs.set(videoUrl, blob);
-            });
-        },
-
         processAdditions(newItems) {
             newItems?.forEach(item => {
                 if (item.type?.startsWith('video/') && !this.blobs.has(item.url)) {
+                    // seed the entry; the preview component fills it via onFrame
                     this.blobs.set(item.url, null);
-                    this.captureBlob(item.url, 0.5).then(blob => {
-                        if (blob) this.blobs.set(item.url, blob);
-                    });
                 }
             });
+        },
+
+        // Fallback capture, used only if the preview never delivered a frame
+        // (e.g. its own decode failed). Resolves options for the target format.
+        async captureThumbnail(videoUrl, time) {
+            const options = await this.getThumbnailOptions();
+            const mimeType = this.thumbnailMimeType(this.thumbnailExtension(options));
+
+            return this.captureBlob(videoUrl, time, mimeType);
         },
 
         processRemovals(newItems, oldItems) {
@@ -133,12 +167,21 @@ export default {
         },
 
         async uploadThumbnail(videoItem) {
-            const blob = this.blobs.get(videoItem.url);
+            let blob = this.blobs.get(videoItem.url);
+            if (!blob) {
+                // preview never delivered a frame — try a direct capture
+                const time = this.seekTimes[videoItem.url] ?? 0.5;
+                blob = await this.captureThumbnail(videoItem.url, time);
+            }
             if (!blob) return;
 
-            const filename = videoItem.name + '_thumb.jpg';
-            const file = new File([blob], filename, { type: 'image/jpeg' });
-            const formData = new FormData();
+            const options   = await this.getThumbnailOptions();
+            const extension = this.thumbnailExtension(options);
+            const mimeType  = this.thumbnailMimeType(extension);
+            const base      = `${options.prefix ?? ''}${videoItem.name}${options.suffix ?? ''}`;
+            const filename  = `${base}.${extension}`;
+            const file      = new File([blob], filename, { type: mimeType });
+            const formData  = new FormData();
             formData.append('file', file, filename);
 
             const duration = this.durations[videoItem.url];
@@ -164,34 +207,122 @@ export default {
             }
         },
 
-        captureBlob(url, time) {
+        captureBlob(url, time, mimeType = 'image/jpeg') {
             return new Promise(resolve => {
                 const video = document.createElement('video');
                 video.muted = true;
                 video.playsInline = true;
                 video.preload = 'auto';
                 let done = false;
+                let metadataTimeout = null;
+                let seekTimeout = null;
+                let frameTimeout = null;
+                let drawTimeout = null;
+
+                const cleanup = () => {
+                    clearTimeout(metadataTimeout);
+                    clearTimeout(seekTimeout);
+                    clearTimeout(frameTimeout);
+                    clearTimeout(drawTimeout);
+                    video.removeEventListener('seeked', capture);
+                    video.src = '';
+                };
+
+                const finish = blob => {
+                    if (done) return;
+                    done = true;
+                    cleanup();
+                    resolve(blob);
+                };
 
                 const draw = () => {
                     if (done) return;
-                    done = true;
                     const canvas = document.createElement('canvas');
                     canvas.width  = video.videoWidth  || 320;
                     canvas.height = video.videoHeight || 180;
-                    canvas.getContext('2d').drawImage(video, 0, 0);
-                    video.src = '';
-                    canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.85);
+                    try {
+                        canvas.getContext('2d').drawImage(video, 0, 0);
+                        canvas.toBlob(blob => finish(blob), mimeType, 0.85);
+                    } catch (error) {
+                        finish(null);
+                    }
                 };
 
-                video.addEventListener('seeked', draw, { once: true });
-                video.addEventListener('loadedmetadata', () => {
-                    video.currentTime = Math.min(time, video.duration);
-                }, { once: true });
-                video.addEventListener('error', () => { if (!done) { done = true; resolve(null); } }, { once: true });
+                // Safari fires `seeked` before the frame is painted, so wait
+                // for the next decoded frame when requestVideoFrameCallback is
+                // available, with timeout fallbacks otherwise.
+                const capture = () => {
+                    clearTimeout(seekTimeout);
 
+                    if (typeof video.requestVideoFrameCallback === 'function') {
+                        frameTimeout = setTimeout(draw, 300);
+                        video.requestVideoFrameCallback(() => {
+                            clearTimeout(frameTimeout);
+                            drawTimeout = setTimeout(draw, 50);
+                        });
+                    } else {
+                        drawTimeout = setTimeout(draw, 300);
+                    }
+                };
+
+                video.addEventListener('seeked', capture, { once: true });
+                video.addEventListener('loadedmetadata', () => {
+                    clearTimeout(metadataTimeout);
+                    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+                    const target = Math.max(0, Math.min(Number(time) || 0, duration));
+
+                    // fall back to capturing even if `seeked` never fires
+                    seekTimeout = setTimeout(capture, 800);
+
+                    try {
+                        video.currentTime = target;
+                    } catch (error) {
+                        capture();
+                    }
+                }, { once: true });
+                video.addEventListener('error', () => finish(null), { once: true });
+
+                // give up if metadata never loads (corrupt/unsupported file)
+                metadataTimeout = setTimeout(() => finish(null), 10000);
                 video.src = url;
                 video.load();
             });
+        },
+
+        async getThumbnailOptions() {
+            if (this.thumbnailOptions) {
+                return this.thumbnailOptions;
+            }
+
+            if (!this.thumbnailOptionsPromise) {
+                this.thumbnailOptionsPromise = this.$api.get('video-thumbnail/options')
+                    .then(options => (this.thumbnailOptions = {
+                        ...defaultThumbnailOptions,
+                        ...options
+                    }))
+                    // never block thumbnail generation on an options failure —
+                    // fall back to the built-in defaults
+                    .catch(() => (this.thumbnailOptions = { ...defaultThumbnailOptions }));
+            }
+
+            return this.thumbnailOptionsPromise;
+        },
+
+        thumbnailExtension(options) {
+            const extension = String(options.extension ?? defaultThumbnailOptions.extension)
+                .replace(/^\.+/, '')
+                .toLowerCase();
+
+            return ['jpg', 'jpeg', 'png', 'webp'].includes(extension) ? extension : 'jpg';
+        },
+
+        thumbnailMimeType(extension) {
+            return {
+                jpg: 'image/jpeg',
+                jpeg: 'image/jpeg',
+                png: 'image/png',
+                webp: 'image/webp'
+            }[extension] ?? 'image/jpeg';
         },
 
         formatTime(seconds) {

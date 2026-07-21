@@ -68,11 +68,15 @@ export default {
     mounted() {
         if (this.isVideo && this.url) this.captureFrame(this.url);
         window.addEventListener('vt:seek-preview', this.onSeekPreview);
+        window.addEventListener('vt:capture-mime', this.onCaptureMime);
+    },
+
+    beforeDestroy() {
+        this.teardown();
     },
 
     beforeUnmount() {
-        window.removeEventListener('vt:seek-preview', this.onSeekPreview);
-        if (this.videoEl) { this.videoEl.src = ''; this.videoEl = null; }
+        this.teardown();
     },
 
     watch: {
@@ -85,6 +89,18 @@ export default {
     },
 
     methods: {
+        teardown() {
+            window.removeEventListener('vt:seek-preview', this.onSeekPreview);
+            window.removeEventListener('vt:capture-mime', this.onCaptureMime);
+            if (this.videoEl) { this.videoEl.src = ''; this.videoEl = null; }
+            this._pendingSeek = null;
+            this._seeking = false;
+        },
+
+        onCaptureMime({ detail: { mimeType } }) {
+            this._captureMime = mimeType;
+        },
+
         captureFrame(url) {
             if (this.videoEl) this.videoEl.src = '';
             const video = document.createElement('video');
@@ -98,8 +114,7 @@ export default {
                 window.dispatchEvent(new CustomEvent('vt:duration-ready', {
                     detail: { videoUrl: url, duration }
                 }));
-                video.addEventListener('seeked', () => this.drawFrame(), { once: true });
-                video.currentTime = Math.min(0.5, duration);
+                this.seekTo(Math.min(0.5, duration), () => this.drawFrame());
             }, { once: true });
 
             video.addEventListener('error', () => {}, { once: true });
@@ -118,12 +133,71 @@ export default {
             const time = this._pendingSeek;
             this._pendingSeek = null;
             this._seeking = true;
-            this.videoEl.addEventListener('seeked', () => {
+            this.seekTo(time, () => {
                 this._seeking = false;
                 this.drawFrame();
                 if (this._pendingSeek != null) this._doNextSeek();
-            }, { once: true });
-            this.videoEl.currentTime = time;
+            });
+        },
+
+        // Seeks to `time`, then invokes `callback` once the frame is actually
+        // ready. Guards against a missing `seeked` event (timeout) and against
+        // Safari drawing a stale/blank frame (see afterFrameReady).
+        seekTo(time, callback) {
+            const video = this.videoEl;
+            if (!video) return;
+
+            const duration = Number.isFinite(video.duration) ? video.duration : 0;
+            const target = Math.max(0, Math.min(Number(time) || 0, duration));
+            let finished = false;
+            let timeout = null;
+
+            const finish = () => {
+                if (finished === true) return;
+                finished = true;
+                clearTimeout(timeout);
+                video.removeEventListener('seeked', finish);
+                this.afterFrameReady(video, callback);
+            };
+
+            timeout = setTimeout(finish, 800);
+
+            if (video.readyState >= 2 && Math.abs(video.currentTime - target) < 0.01) {
+                finish();
+                return;
+            }
+
+            video.addEventListener('seeked', finish, { once: true });
+
+            try {
+                video.currentTime = target;
+            } catch (error) {
+                finish();
+            }
+        },
+
+        // Safari fires `seeked` before the frame is decoded into the video
+        // element, so drawing immediately yields a black/previous frame.
+        // Wait for the next painted frame via requestVideoFrameCallback when
+        // available, with a timeout fallback for browsers without it.
+        afterFrameReady(video, callback) {
+            let done = false;
+
+            const finish = () => {
+                if (done === true) return;
+                done = true;
+                callback();
+            };
+
+            if (typeof video.requestVideoFrameCallback === 'function') {
+                const timeout = setTimeout(finish, 300);
+                video.requestVideoFrameCallback(() => {
+                    clearTimeout(timeout);
+                    setTimeout(finish, 50);
+                });
+            } else {
+                setTimeout(finish, 300);
+            }
         },
 
         drawFrame() {
@@ -133,6 +207,21 @@ export default {
             canvas.height = this.videoEl.videoHeight || 180;
             canvas.getContext('2d').drawImage(this.videoEl, 0, 0);
             this.hasFrame = true;
+            this.emitFrame(canvas);
+        },
+
+        // Hand the freshly drawn frame to the items component as a blob. This
+        // is the same canvas shown in the preview, so the saved thumbnail
+        // always matches what the editor sees — and it avoids a second, cold
+        // video decode that produces black frames for WebM in Safari.
+        emitFrame(canvas) {
+            const mimeType = this._captureMime || 'image/jpeg';
+            canvas.toBlob(blob => {
+                if (!blob) return;
+                window.dispatchEvent(new CustomEvent('video-thumbnail-frame', {
+                    detail: { videoUrl: this.url, blob }
+                }));
+            }, mimeType, 0.85);
         }
     }
 };

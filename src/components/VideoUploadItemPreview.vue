@@ -92,6 +92,7 @@ export default {
         teardown() {
             window.removeEventListener('vt:seek-preview', this.onSeekPreview);
             window.removeEventListener('vt:capture-mime', this.onCaptureMime);
+            clearTimeout(this._captureTimer);
             if (this.videoEl) { this.videoEl.src = ''; this.videoEl = null; }
             this._pendingSeek = null;
             this._seeking = false;
@@ -114,7 +115,10 @@ export default {
                 window.dispatchEvent(new CustomEvent('vt:duration-ready', {
                     detail: { videoUrl: url, duration }
                 }));
-                this.seekTo(Math.min(0.5, duration), () => this.drawFrame());
+                this.seekTo(Math.min(0.5, duration), () => {
+                    this.drawFrame();
+                    this.scheduleCapture();
+                });
             }, { once: true });
 
             video.addEventListener('error', () => {}, { once: true });
@@ -132,18 +136,38 @@ export default {
             if (this._pendingSeek == null || !this.videoEl) return;
             const time = this._pendingSeek;
             this._pendingSeek = null;
+            this._targetTime = time;
             this._seeking = true;
+            // Use a fast (keyframe-snapping) seek while dragging WebM. Exact
+            // seeks are cheap for MP4/H.264 (hardware-decoded, dense keyframes)
+            // but expensive for WebM (VP8/VP9), which usually isn't
+            // hardware-decoded and has sparse keyframes, so an exact seek must
+            // decode every frame from the last keyframe. fastSeek keeps the
+            // WebM scrub responsive; scheduleCapture does one exact seek for
+            // the frame the user finally lands on. MP4 keeps exact seeking so
+            // its live preview stays frame-accurate while dragging.
+            const fast = (this.type || '').includes('webm');
             this.seekTo(time, () => {
                 this._seeking = false;
+                // draw the live preview right away for a responsive scrub…
                 this.drawFrame();
-                if (this._pendingSeek != null) this._doNextSeek();
-            });
+                if (this._pendingSeek != null) {
+                    this._doNextSeek();
+                } else {
+                    // …and only encode/emit the upload blob once the user
+                    // has settled on a frame (see scheduleCapture).
+                    this.scheduleCapture();
+                }
+            }, fast);
         },
 
-        // Seeks to `time`, then invokes `callback` once the frame is actually
-        // ready. Guards against a missing `seeked` event (timeout) and against
-        // Safari drawing a stale/blank frame (see afterFrameReady).
-        seekTo(time, callback) {
+        // Seeks to `time`, then invokes `callback` as soon as the `seeked`
+        // event fires (or after a timeout guard if it never does). Kept off
+        // the frame-decode wait so scrubbing stays responsive; the careful
+        // Safari-safe decode happens later in scheduleCapture. When `fast` is
+        // set, prefers video.fastSeek (Safari/Firefox) to snap to the nearest
+        // keyframe instead of decoding to the exact frame.
+        seekTo(time, callback, fast = false) {
             const video = this.videoEl;
             if (!video) return;
 
@@ -157,7 +181,7 @@ export default {
                 finished = true;
                 clearTimeout(timeout);
                 video.removeEventListener('seeked', finish);
-                this.afterFrameReady(video, callback);
+                callback();
             };
 
             timeout = setTimeout(finish, 800);
@@ -170,7 +194,11 @@ export default {
             video.addEventListener('seeked', finish, { once: true });
 
             try {
-                video.currentTime = target;
+                if (fast && typeof video.fastSeek === 'function') {
+                    video.fastSeek(target);
+                } else {
+                    video.currentTime = target;
+                }
             } catch (error) {
                 finish();
             }
@@ -200,14 +228,35 @@ export default {
             }
         },
 
+        // Debounced, Safari-safe capture of the settled frame. Does one exact
+        // seek to the frame the user landed on (the interactive scrub may have
+        // fast-seeked to a nearby keyframe), then runs the
+        // requestVideoFrameCallback wait — which the scrub path skips — so the
+        // *saved* thumbnail is a correctly decoded, exact frame. Debouncing
+        // means a rapid scrub triggers this exactly once, when the user stops.
+        scheduleCapture() {
+            clearTimeout(this._captureTimer);
+            this._captureTimer = setTimeout(() => {
+                const video = this.videoEl;
+                if (!video) return;
+                const target = this._targetTime ?? video.currentTime;
+                this.seekTo(target, () => {
+                    this.afterFrameReady(video, () => {
+                        const canvas = this.drawFrame();
+                        if (canvas) this.emitFrame(canvas);
+                    });
+                });
+            }, 120);
+        },
+
         drawFrame() {
             const canvas = this.$refs.canvasEl;
-            if (!canvas || !this.videoEl) return;
+            if (!canvas || !this.videoEl) return null;
             canvas.width  = this.videoEl.videoWidth  || 320;
             canvas.height = this.videoEl.videoHeight || 180;
             canvas.getContext('2d').drawImage(this.videoEl, 0, 0);
             this.hasFrame = true;
-            this.emitFrame(canvas);
+            return canvas;
         },
 
         // Hand the freshly drawn frame to the items component as a blob. This

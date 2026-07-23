@@ -7,7 +7,7 @@ A Kirby Panel plugin that automatically generates a JPEG thumbnail from a video 
 
 ## Features
 
-[video-thumbnail 18.41.22.webm](https://github.com/user-attachments/assets/0c427981-420c-4f57-8da2-cefbf615be3b)
+[video-thumbnail.webm](https://github.com/user-attachments/assets/8eec8345-3dc2-44fd-843d-1d3a888cec0b)
 
 
 ## Features

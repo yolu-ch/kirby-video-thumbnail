@@ -150,7 +150,7 @@ Kirby::plugin('yolu/video-thumbnail', [
     'hooks' => [
         'file.create:after' => function ($file) {
             if (isThumbnailFile($file) === true) {
-                $file->changeTemplate(thumbnailTemplate());
+                $file->update(['template' => thumbnailTemplate()]);
 
                 $duration = kirby()->request()->body()->get('duration');
                 if ($duration !== null) {
@@ -169,7 +169,7 @@ Kirby::plugin('yolu/video-thumbnail', [
             }
 
             if (str_starts_with($file->type(), 'video')) {
-                $file->changeTemplate('video');
+                $file->update(['template' => 'video']);
             }
         },
         'file.delete:before' => function ($file) {

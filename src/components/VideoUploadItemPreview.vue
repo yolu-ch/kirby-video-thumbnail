@@ -1,6 +1,12 @@
 <template>
-    <a v-if="!isVideo" class="k-upload-item-preview" :href="url" target="_blank">
-        <k-image
+    <a
+        v-if="!isVideo"
+        :aria-label="$panel.t('open.newWindow')"
+        :href="url"
+        class="k-upload-item-preview"
+        target="_blank"
+    >
+        <k-image-frame
             v-if="isPreviewable"
             :cover="cover"
             :src="url"
@@ -69,10 +75,6 @@ export default {
         if (this.isVideo && this.url) this.captureFrame(this.url);
         window.addEventListener('vt:seek-preview', this.onSeekPreview);
         window.addEventListener('vt:capture-mime', this.onCaptureMime);
-    },
-
-    beforeDestroy() {
-        this.teardown();
     },
 
     beforeUnmount() {

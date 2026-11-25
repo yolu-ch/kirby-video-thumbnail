@@ -25,8 +25,10 @@ A Kirby Panel plugin that automatically generates a JPEG thumbnail from a video 
 
 ## Requirements
 
-- Kirby 4 or 5
+- Kirby 6 (PHP 8.3+)
 - Modern browser (Canvas API + `<video>` element support)
+
+> **Using Kirby 4 or 5?** Version 2 targets Kirby 6 only, since the Kirby 6 Panel runs on Vue 3. Use the 1.x releases instead: `composer require yolu/kirby-video-thumbnail:^1.3`
 
 ## Installation
 
@@ -105,6 +107,16 @@ return [
 Supported thumbnail extensions are `jpg`, `jpeg`, `png` and `webp`.
 
 If `prefix` and `suffix` are both empty, the generated thumbnail keeps the video's basename. For example, `example.mp4` creates `example.jpg`.
+
+## Development
+
+Building the Panel bundle requires Node.js 24+ ([kirbyup](https://github.com/johannschopplich/kirbyup) 4).
+
+```bash
+npm install
+npm run dev    # dev server with HMR (writes index.dev.js)
+npm run build  # production build (index.js / index.css)
+```
 
 ## License
 

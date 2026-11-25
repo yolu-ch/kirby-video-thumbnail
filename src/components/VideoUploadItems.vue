@@ -1,16 +1,14 @@
 <template>
     <ul class="k-upload-items">
-        <template v-for="item in items">
+        <template v-for="item in items" :key="item.id">
             <k-upload-item
                 v-bind="item"
-                :id="item.id"
                 class="k-upload-item-video"
                 @rename="$emit('rename', item, $event)"
                 @remove="$emit('remove', item)"
             />
             <li
                 v-if="item.type?.startsWith('video/') && durations[item.url]"
-                :key="item.id + '-slider'"
                 class="vt-slider-row"
                 @pointermove="onSliderDrag(item.url, $event)"
                 @input="onScrub(item.url, parseFloat($event.target.value))"
@@ -20,7 +18,7 @@
                     :max="durations[item.url]"
                     :step="0.01"
                     :value="seekTimes[item.url] ?? 0"
-                    :help="$t('video-thumbnail.slider.help')"
+                    :help="$panel.t('video-thumbnail.slider.help')"
                     :tooltip="{ before: formatTime(seekTimes[item.url] ?? 0) }"
                 />
             </li>
@@ -45,18 +43,22 @@ export default {
 
     data() {
         return {
-            // videoUrl -> current thumbnail Blob, kept locally so it never
-            // takes a slot in $panel.upload.files (and thus never counts
-            // towards a field's `max`)
-            blobs: new Map(),
-            // videoUrl -> true once its thumbnail has been uploaded
-            uploaded: new Set(),
             // configurable filename/template options, fetched once from the API
             thumbnailOptions: null,
             thumbnailOptionsPromise: null,
             durations: {},
             seekTimes: {}
         };
+    },
+
+    created() {
+        // Non-reactive bookkeeping (kept off `data` so Vue doesn't proxy it):
+        // videoUrl -> current thumbnail Blob, kept locally so it never
+        // takes a slot in $panel.upload.files (and thus never counts
+        // towards a field's `max`)
+        this.blobs = new Map();
+        // videoUrls whose thumbnail has already been uploaded
+        this.uploaded = new Set();
     },
 
     mounted() {
@@ -72,10 +74,6 @@ export default {
                 detail: { mimeType }
             }));
         });
-    },
-
-    beforeDestroy() {
-        this.teardown();
     },
 
     unmounted() {
@@ -107,14 +105,14 @@ export default {
         },
 
         onDurationReady({ detail: { videoUrl, duration } }) {
-            this.$set(this.durations, videoUrl, duration);
+            this.durations[videoUrl] = duration;
             if (this.seekTimes[videoUrl] == null) {
-                this.$set(this.seekTimes, videoUrl, 0);
+                this.seekTimes[videoUrl] = 0;
             }
         },
 
         onScrub(videoUrl, time) {
-            this.$set(this.seekTimes, videoUrl, time);
+            this.seekTimes[videoUrl] = time;
             window.dispatchEvent(new CustomEvent('vt:seek-preview', {
                 detail: { videoUrl, time }
             }));
@@ -150,8 +148,8 @@ export default {
                 if (newItems?.some(i => i.id === item.id)) return;
                 this.blobs.delete(item.url);
                 this.uploaded.delete(item.url);
-                this.$delete(this.durations, item.url);
-                this.$delete(this.seekTimes, item.url);
+                delete this.durations[item.url];
+                delete this.seekTimes[item.url];
             });
         },
 
@@ -200,7 +198,7 @@ export default {
                 // re-fetch (and thus re-apply their `query` filter that hides
                 // the thumbnail) in reaction to a `model.update` event — a
                 // plain view refresh alone doesn't reliably trigger that.
-                this.$events.emit('model.update');
+                this.$panel.events.emit('model.update');
                 await this.$panel.view.refresh();
             } catch (error) {
                 this.$panel.error(error);
@@ -295,7 +293,7 @@ export default {
             }
 
             if (!this.thumbnailOptionsPromise) {
-                this.thumbnailOptionsPromise = this.$api.get('video-thumbnail/options')
+                this.thumbnailOptionsPromise = this.$panel.api.get('video-thumbnail/options')
                     .then(options => (this.thumbnailOptions = {
                         ...defaultThumbnailOptions,
                         ...options
@@ -343,12 +341,12 @@ export default {
     grid-template-columns: 1fr 2fr auto;
     grid-template-rows: auto var(--input-height) 1fr;
     min-height: 0;
-    border-radius: var(--rounded) var(--rounded) 0 0;;
+    border-radius: var(--rounded) var(--rounded) 0 0;
 }
 
 .vt-slider-row {
     list-style: none;
-    background: var(--upload-item-color-back); 
+    background: var(--upload-item-color-back);
     border-radius: 0 0 var(--rounded, 0.25rem) var(--rounded, 0.25rem);
     padding: 0.4rem 0.5rem 0.3rem;
     margin-top: -0.25rem;

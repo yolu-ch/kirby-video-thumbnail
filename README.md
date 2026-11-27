@@ -16,10 +16,11 @@ A Kirby Panel plugin that automatically generates a JPEG thumbnail from a video 
 - Live preview of the selected frame in the upload item
 - Slider to scrub through the video and choose any frame as the thumbnail
 - Thumbnail is uploaded alongside the video as `{videoname}_thumb.jpg` by default, uploaded independently of the video so it never counts towards a `files` field's `max` (works the same in `files` sections and in `files` fields, including `multiple: false`)
-- Thumbnail file automatically gets the `thumb` template applied via a hook by default
+- New thumbnails receive the configured template and store their video’s UUID
 - Thumbnail filename (prefix/suffix/extension) and file template are configurable
 - Video file automatically gets the `video` template applied, which uses the thumbnail as its Panel preview image instead of the generic video icon
-- Thumbnail is deleted automatically when its video is deleted
+- **Choose poster frame** in the video's file view replaces the thumbnail later and keeps its UUID and metadata
+- Thumbnail is renamed with its video and deleted automatically when its video is deleted
 - Works with any browser-supported video format (MP4, WebM, etc.) — WebM requires Safari 16+
 - Video duration (in seconds) is read client-side and stored in the video file's `duration` field
 
@@ -68,12 +69,28 @@ fields:
     type: text
 ```
 
-Since the thumbnail is a regular file living next to the video, hide it from your files sections by filtering out its template:
+Open the video in the Panel and choose **Choose poster frame** to replace its thumbnail. Replacing a frame keeps the thumbnail's UUID and metadata. If your video blueprint does not extend `files/video`, add the button to its view buttons and use the thumbnail as its preview image:
+
+```yaml
+# site/blueprints/files/video.yml
+buttons:
+  - open
+  - videoPoster
+  - settings
+  - languages
+
+image:
+  query: file.videoThumb
+```
+
+Use `$video->videoThumb()?->url()` in templates. Thumbnails from earlier versions are still displayed. The frame dialog asks before it adopts one. Other images at the thumbnail's filename are kept and reported as conflicts.
+
+Since the thumbnail is a regular file living next to the video, hide it from your file lists:
 
 ```yaml
 files:
-  type: files
-  query: page.files.filterBy('template', '!=', 'thumb')
+  type: filelist
+  query: model.files.filterBy("isManagedVideoPoster", false)
 ```
 
 ## Options

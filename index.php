@@ -59,6 +59,8 @@ function thumbnailFilenameFor(string $videoName): string
 }
 
 require_once __DIR__ . '/poster.php';
+// Only the Panel's file view needs the preview class.
+load(['Yolu\\VideoThumbnail\\VideoFilePreview' => 'preview.php'], __DIR__);
 
 Kirby::plugin('yolu/video-thumbnail', [
     'options' => [
@@ -138,6 +140,9 @@ Kirby::plugin('yolu/video-thumbnail', [
                 ]
             ]
         ]
+    ],
+    'filePreviews' => [
+        VideoFilePreview::class
     ],
     'fileMethods' => [
         'videoThumb' => function () {

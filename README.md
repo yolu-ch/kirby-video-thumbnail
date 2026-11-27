@@ -19,6 +19,7 @@ A Kirby Panel plugin that automatically generates a JPEG thumbnail from a video 
 - New thumbnails receive the configured template and store their video’s UUID
 - Thumbnail filename (prefix/suffix/extension) and file template are configurable
 - Video file automatically gets the `video` template applied, which uses the thumbnail as its Panel preview image instead of the generic video icon
+- The video's file view uses the thumbnail as the player's poster
 - **Choose poster frame** in the video's file view replaces the thumbnail later and keeps its UUID and metadata
 - Thumbnail is renamed with its video and deleted automatically when its video is deleted
 - Works with any browser-supported video format (MP4, WebM, etc.) — WebM requires Safari 16+

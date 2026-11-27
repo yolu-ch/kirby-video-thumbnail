@@ -5,6 +5,7 @@ use Kirby\Cms\File;
 use Kirby\Exception\LogicException;
 use Kirby\Exception\PermissionException;
 use Kirby\Filesystem\Dir;
+use Kirby\Panel\Ui\FilePreview;
 use function Yolu\VideoThumbnail\saveFrame;
 
 require getenv('KIRBY_TEST_AUTOLOAD') ?: dirname(__DIR__) . '/vendor/autoload.php';
@@ -44,6 +45,8 @@ try {
     $clip = $video('clip');
     $poster = saveFrame($clip, $image, 2);
     $check($poster->filename() === 'p-clip.png' && $poster->isManagedVideoPoster(), 'Configured filename and ownership');
+    $preview = FilePreview::factory($page->file('clip.mp4'));
+    $check($preview->component === 'video-thumbnail-file-preview' && $preview->props()['poster'] === $poster->url(), 'File view uses the poster');
     $uuid = $poster->uuid()->toString();
     $poster->update(['alt' => 'Existing caption']);
     $poster = saveFrame($clip, $image);
@@ -57,6 +60,7 @@ try {
     $clip->delete();
     $check(!is_file($page->root() . '/p-renamed.png'), 'Deletion removes owned poster');
     $clip = $video('source');
+    $check(FilePreview::factory($clip)->props()['poster'] === null, 'File view without a poster');
     $poster = saveFrame($clip, $image, 2);
     $posterUuid = $poster->uuid()->toString();
     $clip = $page->file('source.mp4')->replace($source);

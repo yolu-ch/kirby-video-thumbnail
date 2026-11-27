@@ -190,9 +190,21 @@ export default {
 
             try {
                 await uploadFrame(this.$panel, videoItem.model.uuid, blob, this.durations[videoItem.url]);
+                await this.refreshPreview(videoItem.model);
             } catch (error) {
                 this.$panel.error(error);
             }
+        },
+
+        // File pickers show the item from the upload response, which was
+        // created before the thumbnail existed. Load the item's new image.
+        async refreshPreview(model) {
+            if (!model?.uuid || typeof model.image !== 'object' || model.image === null) return;
+            const query = { image: JSON.stringify({ cover: model.image.cover, ratio: model.image.ratio }) };
+            if (model.layout) query.layout = model.layout;
+            const item = await this.$helper.items('items/files', model.uuid, query);
+            const { src, srcset, url } = item?.image ?? {};
+            if (url) Object.assign(model.image, { src, srcset, url });
         },
 
         captureBlob(url, time, mimeType = 'image/jpeg') {

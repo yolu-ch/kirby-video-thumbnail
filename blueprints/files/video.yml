@@ -1,5 +1,11 @@
 title: Video
 
+buttons:
+  - open
+  - videoPoster
+  - settings
+  - languages
+
 image:
   query: file.videoThumb
   ratio: 16/9

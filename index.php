@@ -58,65 +58,9 @@ function thumbnailFilenameFor(string $videoName): string
     return thumbnailPrefix() . $videoName . thumbnailSuffix() . '.' . thumbnailExtension();
 }
 
-/**
- * Reverses thumbnailFilenameFor(): given a thumbnail file, returns the
- * basename of the video it belongs to, or null if the name doesn't match
- * the configured prefix/suffix.
- */
-function videoNameForThumb(File $file): ?string
-{
-    $name   = $file->name();
-    $prefix = thumbnailPrefix();
-    $suffix = thumbnailSuffix();
-
-    if ($prefix !== '') {
-        if (str_starts_with($name, $prefix) === false) {
-            return null;
-        }
-
-        $name = substr($name, strlen($prefix));
-    }
-
-    if ($suffix !== '') {
-        if (str_ends_with($name, $suffix) === false) {
-            return null;
-        }
-
-        $name = substr($name, 0, -strlen($suffix));
-    }
-
-    return $name !== '' ? $name : null;
-}
-
-/**
- * A file is a generated thumbnail when its extension matches, its name
- * matches the configured prefix/suffix, and a sibling video with the
- * derived basename actually exists.
- */
-function isThumbnailFile(File $file): bool
-{
-    if (strtolower($file->extension()) !== thumbnailExtension()) {
-        return false;
-    }
-
-    $videoName = videoNameForThumb($file);
-
-    if ($videoName === null) {
-        return false;
-    }
-
-    $parent = $file->parent();
-
-    if ($parent === null) {
-        return false;
-    }
-
-    return $parent->files()->filter(
-        static fn (File $sibling): bool =>
-            $sibling->type() === 'video' &&
-            $sibling->name() === $videoName
-    )->first() instanceof File;
-}
+require_once __DIR__ . '/poster.php';
+// Only the Panel's file view needs the preview class.
+load(['Yolu\\VideoThumbnail\\VideoFilePreview' => 'preview.php'], __DIR__);
 
 Kirby::plugin('yolu/video-thumbnail', [
     'options' => [
@@ -135,57 +79,137 @@ Kirby::plugin('yolu/video-thumbnail', [
                 'pattern' => 'video-thumbnail/options',
                 'method'  => 'GET',
                 'action'  => fn () => thumbnailOptions()
+            ],
+            [
+                'pattern' => 'video-thumbnail/frame/(:any)',
+                'method' => 'POST',
+                'action' => function (string $id) {
+                    $video = kirby()->file('file://' . $id);
+                    if (!$video || $video->type() !== 'video' || !$video->isAccessible()) {
+                        throw new \Kirby\Exception\NotFoundException();
+                    }
+                    $recent = kirby()->session()->get('video-thumbnail.uploads', []);
+                    if (!$video->guards()->isAvailable('replace') && ($recent[$id] ?? 0) < time()) {
+                        throw new \Kirby\Exception\PermissionException();
+                    }
+                    return $this->upload(
+                        callback: function (string $source) use ($video) {
+                            try {
+                                return saveFrame($video, $source, $this->requestBody('duration'), $this->requestBody('adopt') === 'true');
+                            } finally {
+                                \Kirby\Filesystem\F::remove($source);
+                            }
+                        },
+                        single: true
+                    );
+                }
             ]
         ]
     ],
+    'areas' => [
+        'video-thumbnail' => fn () => [
+            'buttons' => [
+                'file.videoPoster' => function ($model) {
+                    if (!$model instanceof File || $model->type() !== 'video' || !$model->guards()->isAvailable('replace') || !$model->uuid()) {
+                        return null;
+                    }
+                    return [
+                        'text' => t('video-thumbnail.frame'), 'icon' => 'image',
+                        'dialog' => 'video-thumbnail/frame/' . $model->uuid()->id()
+                    ];
+                }
+            ],
+            'dialogs' => [
+                'video-thumbnail/frame/(:any)' => [
+                    'load' => function (string $id) {
+                        $video = kirby()->file('file://' . $id);
+                        if (!$video || $video->type() !== 'video' || !$video->isAccessible() || !$video->guards()->isAvailable('replace')) {
+                            throw new \Kirby\Exception\PermissionException();
+                        }
+                        return [
+                            'component' => 'video-thumbnail-frame-dialog',
+                            'props' => [
+                                'id' => $id,
+                                'url' => $video->url(),
+                                'mime' => $video->mime(),
+                                'legacy' => displayPoster($video) !== null && !ownedPoster($video),
+                                'extension' => thumbnailExtension()
+                            ]
+                        ];
+                    }
+                ]
+            ]
+        ]
+    ],
+    'filePreviews' => [
+        VideoFilePreview::class
+    ],
     'fileMethods' => [
         'videoThumb' => function () {
-            if (str_starts_with($this->type(), 'video') === false) {
-                return null;
-            }
-
-            return $this->parent()->file(thumbnailFilenameFor($this->name()));
+            return $this->type() === 'video' ? displayPoster($this) : null;
+        },
+        'isManagedVideoPoster' => function () {
+            return isManagedPoster($this);
         }
     ],
     'hooks' => [
-        'file.create:after' => function ($file) {
-            if (isThumbnailFile($file) === true) {
-                $file->update(['template' => thumbnailTemplate()]);
-
-                $duration = kirby()->request()->body()->get('duration');
-                if ($duration !== null) {
-                    $videoName = videoNameForThumb($file);
-                    if ($videoName !== null) {
-                        $video = $file->parent()->files()
-                            ->filterBy('name', $videoName)
-                            ->filterBy('type', 'video')
-                            ->first();
-
-                        $video?->update(['duration' => round((float) $duration, 2)]);
-                    }
-                }
-
-                return;
+        'file.create:after' => function (File $file) {
+            if ($file->type() !== 'video') {
+                return $file;
             }
-
-            if (str_starts_with($file->type(), 'video')) {
-                $file->update(['template' => 'video']);
+            if ($file->template() !== 'video') {
+                $file = $file->kirby()->impersonate('kirby', fn () => $file->update(['template' => 'video']));
+            }
+            if ($file->uuid() && $file->kirby()->user()) {
+                $session = $file->kirby()->session();
+                $recent = array_filter($session->get('video-thumbnail.uploads', []), fn ($expiry) => $expiry >= time());
+                $recent[$file->uuid()->id()] = time() + 900;
+                $session->set('video-thumbnail.uploads', $recent);
+            }
+            return $file;
+        },
+        'file.changeName:before' => function (File $file, string $name) {
+            if (!PosterRename::allows($file) && isManagedPoster($file)) {
+                throw new \Kirby\Exception\LogicException(message: t('video-thumbnail.rename'));
+            }
+            if ($file->type() === 'video' && $file->name() !== $name) {
+                ensureDestination($file, $name);
             }
         },
-        'file.delete:before' => function ($file) {
-            if (str_starts_with($file->type(), 'video') === false) {
-                return;
+        'file.changeName:after' => function (File $oldFile, File $newFile) {
+            if ($newFile->type() === 'video' && $oldFile->name() !== $newFile->name()) {
+                // Kirby has moved the UUID to the renamed video. Its poster still has the old name.
+                $poster = ownedPoster($newFile, recover: true, videoName: $oldFile->name());
+                if ($poster) {
+                    PosterRename::with($poster, fn () => $poster->kirby()->impersonate('kirby', fn () => $poster->changeName(pathinfo(thumbnailFilenameFor($newFile->name()), PATHINFO_FILENAME))));
+                }
             }
-
-            $thumb = $file->parent()->file(thumbnailFilenameFor($file->name()));
-            $thumb?->delete();
+        },
+        'file.delete:after' => function (File $file) {
+            if ($file->type() === 'video' && $poster = ownedPoster($file, true)) {
+                $file->kirby()->impersonate('kirby', fn () => $poster->delete());
+            }
         }
     ],
     'translations' => [
         'en' => [
+            'video-thumbnail.position' => 'Position (seconds)',
+            'video-thumbnail.decodeError' => 'The browser could not load a frame from this video.',
+            'video-thumbnail.adopt' => 'Replace the existing poster and manage it with this video',
+            'video-thumbnail.namingChanged' => 'The poster uses an earlier naming configuration. Restore those options before replacing its frame.',
+            'video-thumbnail.frame' => 'Choose poster frame',
+            'video-thumbnail.rename' => 'Rename the video to rename its poster.',
+            'video-thumbnail.collision' => 'Another file uses this poster name. Resolve the conflict in Files.',
             'video-thumbnail.slider.help' => 'Choose the frame to use as the video thumbnail.'
         ],
         'de' => [
+            'video-thumbnail.position' => 'Position (Sekunden)',
+            'video-thumbnail.decodeError' => 'Der Browser konnte kein Standbild aus diesem Video laden.',
+            'video-thumbnail.adopt' => 'Vorhandenes Standbild ersetzen und mit diesem Video verwalten',
+            'video-thumbnail.namingChanged' => 'Das Standbild verwendet frühere Namenseinstellungen. Stelle sie vor dem Ersetzen wieder her.',
+            'video-thumbnail.frame' => 'Standbild wählen',
+            'video-thumbnail.rename' => 'Benenne das Video um, um sein Standbild umzubenennen.',
+            'video-thumbnail.collision' => 'Eine andere Datei verwendet diesen Standbildnamen. Prüfe die Dateien.',
             'video-thumbnail.slider.help' => 'Wähle das Vorschaubild aus, welches aus dem Video generiert werden soll.'
         ]
     ]

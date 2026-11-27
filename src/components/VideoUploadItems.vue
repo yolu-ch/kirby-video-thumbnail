@@ -11,7 +11,6 @@
                 v-if="item.type?.startsWith('video/') && durations[item.url]"
                 class="vt-slider-row"
                 @pointermove="onSliderDrag(item.url, $event)"
-                @input="onScrub(item.url, parseFloat($event.target.value))"
             >
                 <k-range-field
                     :min="0"
@@ -20,6 +19,7 @@
                     :value="seekTimes[item.url] ?? 0"
                     :help="$panel.t('video-thumbnail.slider.help')"
                     :tooltip="{ before: formatTime(seekTimes[item.url] ?? 0) }"
+                    @input="onScrub(item.url, Number($event))"
                 />
             </li>
         </template>
@@ -27,6 +27,8 @@
 </template>
 
 <script>
+import { uploadFrame } from '../frame.js';
+
 const defaultThumbnailOptions = {
     template: 'thumb',
     prefix: '',
@@ -63,7 +65,18 @@ export default {
 
     mounted() {
         this.processAdditions(this.items);
-        this.processCompletions(this.items);
+        // Kirby awaits completion listeners before it calls `done`, emits
+        // `model.update` and releases its object URLs, so the thumbnail
+        // exists by then.
+        const upload = this.$panel.upload;
+        const previous = upload.on.complete;
+        this.previousComplete = previous;
+        this.completeListener = async (...args) => {
+            await this.processCompletions(this.items);
+            return previous?.(...args);
+        };
+        upload.removeEventListener('complete');
+        upload.addEventListener('complete', this.completeListener);
         window.addEventListener('vt:duration-ready', this.onDurationReady);
         window.addEventListener('video-thumbnail-frame', this.onFrame);
 
@@ -76,7 +89,7 @@ export default {
         });
     },
 
-    unmounted() {
+    beforeUnmount() {
         this.teardown();
     },
 
@@ -86,13 +99,17 @@ export default {
             handler(newItems, oldItems) {
                 this.processAdditions(newItems);
                 this.processRemovals(newItems, oldItems);
-                this.processCompletions(newItems);
             }
         }
     },
 
     methods: {
         teardown() {
+            const upload = this.$panel.upload;
+            if (upload.on.complete === this.completeListener) {
+                upload.removeEventListener('complete');
+                if (this.previousComplete) upload.addEventListener('complete', this.previousComplete);
+            }
             window.removeEventListener('vt:duration-ready', this.onDurationReady);
             window.removeEventListener('video-thumbnail-frame', this.onFrame);
         },
@@ -100,19 +117,18 @@ export default {
         // The preview component decodes and draws the frame the editor sees,
         // then hands it back here as a blob. That single decode is the source
         // of truth for the uploaded thumbnail.
-        onFrame({ detail: { videoUrl, blob } }) {
-            if (blob) this.blobs.set(videoUrl, blob);
+        onFrame({ detail: { videoUrl, blob, time } }) {
+            const selected = this.seekTimes[videoUrl];
+            if (blob && (selected == null || Math.abs(time - selected) < 0.05)) this.blobs.set(videoUrl, blob);
         },
 
         onDurationReady({ detail: { videoUrl, duration } }) {
             this.durations[videoUrl] = duration;
-            if (this.seekTimes[videoUrl] == null) {
-                this.seekTimes[videoUrl] = 0;
-            }
         },
 
         onScrub(videoUrl, time) {
             this.seekTimes[videoUrl] = time;
+            this.blobs.set(videoUrl, null);
             window.dispatchEvent(new CustomEvent('vt:seek-preview', {
                 detail: { videoUrl, time }
             }));
@@ -153,56 +169,42 @@ export default {
             });
         },
 
-        processCompletions(items) {
-            items?.forEach(item => {
-                if (!item.type?.startsWith('video/')) return;
-                if (!item.completed || !item.model) return;
-                if (this.uploaded.has(item.url)) return;
-
+        async processCompletions(items) {
+            const pending = (items ?? []).filter(item =>
+                item.type?.startsWith('video/') && item.completed && item.model && !this.uploaded.has(item.url)
+            );
+            await Promise.all(pending.map(async item => {
                 this.uploaded.add(item.url);
-                this.uploadThumbnail(item);
-            });
+                await this.uploadThumbnail(item);
+            }));
         },
 
         async uploadThumbnail(videoItem) {
             let blob = this.blobs.get(videoItem.url);
             if (!blob) {
                 // preview never delivered a frame — try a direct capture
-                const time = this.seekTimes[videoItem.url] ?? 0.5;
+                const time = this.seekTimes[videoItem.url] ?? 0;
                 blob = await this.captureThumbnail(videoItem.url, time);
             }
             if (!blob) return;
 
-            const options   = await this.getThumbnailOptions();
-            const extension = this.thumbnailExtension(options);
-            const mimeType  = this.thumbnailMimeType(extension);
-            const base      = `${options.prefix ?? ''}${videoItem.name}${options.suffix ?? ''}`;
-            const filename  = `${base}.${extension}`;
-            const file      = new File([blob], filename, { type: mimeType });
-            const formData  = new FormData();
-            formData.append('file', file, filename);
-
-            const duration = this.durations[videoItem.url];
-            if (duration != null) {
-                formData.append('duration', duration);
-            }
-
             try {
-                await fetch(this.$panel.upload.url, {
-                    method: 'POST',
-                    headers: { 'x-csrf': this.$panel.system.csrf },
-                    body: formData
-                });
-                // the video's own upload already refreshed the field/section
-                // before this thumbnail existed on disk. Files sections only
-                // re-fetch (and thus re-apply their `query` filter that hides
-                // the thumbnail) in reaction to a `model.update` event — a
-                // plain view refresh alone doesn't reliably trigger that.
-                this.$panel.events.emit('model.update');
-                await this.$panel.view.refresh();
+                await uploadFrame(this.$panel, videoItem.model.uuid, blob, this.durations[videoItem.url]);
+                await this.refreshPreview(videoItem.model);
             } catch (error) {
                 this.$panel.error(error);
             }
+        },
+
+        // File pickers show the item from the upload response, which was
+        // created before the thumbnail existed. Load the item's new image.
+        async refreshPreview(model) {
+            if (!model?.uuid || typeof model.image !== 'object' || model.image === null) return;
+            const query = { image: JSON.stringify({ cover: model.image.cover, ratio: model.image.ratio }) };
+            if (model.layout) query.layout = model.layout;
+            const item = await this.$helper.items('items/files', model.uuid, query);
+            const { src, srcset, url } = item?.image ?? {};
+            if (url) Object.assign(model.image, { src, srcset, url });
         },
 
         captureBlob(url, time, mimeType = 'image/jpeg') {

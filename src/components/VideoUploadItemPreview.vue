@@ -34,7 +34,9 @@
 
 <script>
 export default {
+    emits: ['capture-error'],
     props: {
+        captureMime: String,
         back: String,
         color: String,
         cover: { type: Boolean, default: true },
@@ -78,11 +80,14 @@ export default {
     },
 
     beforeUnmount() {
+        window.removeEventListener('vt:seek-preview', this.onSeekPreview);
+        window.removeEventListener('vt:capture-mime', this.onCaptureMime);
         this.teardown();
     },
 
     watch: {
         url(newUrl) {
+            this.teardown();
             if (this.isVideo && newUrl) {
                 this.hasFrame = false;
                 this.captureFrame(newUrl);
@@ -92,9 +97,11 @@ export default {
 
     methods: {
         teardown() {
-            window.removeEventListener('vt:seek-preview', this.onSeekPreview);
-            window.removeEventListener('vt:capture-mime', this.onCaptureMime);
             clearTimeout(this._captureTimer);
+            this.frameRequest?.abort();
+            if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
+            this.objectUrl = null;
+            this._targetTime = null;
             if (this.videoEl) { this.videoEl.src = ''; this.videoEl = null; }
             this._pendingSeek = null;
             this._seeking = false;
@@ -112,19 +119,36 @@ export default {
             video.preload = 'auto';
             this.videoEl = video;
 
-            video.addEventListener('loadedmetadata', () => {
+            video.addEventListener('loadeddata', async () => {
                 const duration = isFinite(video.duration) ? video.duration : 0;
+                // Servers without HTTP range support can play the file but cannot seek.
+                // Blob URLs from the upload dialog already support seeking.
+                if (!url.startsWith('blob:') && !this.objectUrl && duration > 0 &&
+                    (!video.seekable.length || video.seekable.end(0) < duration - 0.01)) {
+                    this.frameRequest = new AbortController();
+                    try {
+                        const response = await fetch(url, { signal: this.frameRequest.signal });
+                        if (!response.ok) throw new Error(response.statusText);
+                        const blob = await response.blob();
+                        if (this.videoEl !== video) return;
+                        this.objectUrl = URL.createObjectURL(blob);
+                        this.captureFrame(url);
+                    } catch (error) {
+                        if (error.name !== 'AbortError') this.$emit('capture-error');
+                    }
+                    return;
+                }
                 window.dispatchEvent(new CustomEvent('vt:duration-ready', {
                     detail: { videoUrl: url, duration }
                 }));
-                this.seekTo(Math.min(0.5, duration), () => {
-                    this.drawFrame();
-                    this.scheduleCapture();
-                });
+                this.drawFrame();
+                this.scheduleCapture();
             }, { once: true });
 
-            video.addEventListener('error', () => {}, { once: true });
-            video.src = url;
+            video.addEventListener('error', () => {
+                if (this.videoEl === video) this.$emit('capture-error');
+            }, { once: true });
+            video.src = this.objectUrl || url;
             video.load();
         },
 
@@ -266,11 +290,12 @@ export default {
         // always matches what the editor sees — and it avoids a second, cold
         // video decode that produces black frames for WebM in Safari.
         emitFrame(canvas) {
-            const mimeType = this._captureMime || 'image/jpeg';
+            const mimeType = this.captureMime || this._captureMime || 'image/jpeg';
+            const time = this.videoEl?.currentTime ?? 0;
             canvas.toBlob(blob => {
                 if (!blob) return;
                 window.dispatchEvent(new CustomEvent('video-thumbnail-frame', {
-                    detail: { videoUrl: this.url, blob }
+                    detail: { videoUrl: this.url, blob, time }
                 }));
             }, mimeType, 0.85);
         }
